@@ -151,10 +151,10 @@ Show-SidecarSizes -FfmpegPath $FfmpegOut -FfprobePath $FfprobeOut
 try {
     $encoders = & $FfmpegOut -hide_banner -encoders 2>&1 | Out-String
     if ($encoders -notmatch "libx264") {
-        Write-Warning "libx264 encoder not listed — sidecar may be incomplete."
+        Write-Warning "libx264 encoder not listed - sidecar may be incomplete."
     }
     if ($encoders -notmatch "\baac\b") {
-        Write-Warning "aac encoder not listed — sidecar may be incomplete."
+        Write-Warning "aac encoder not listed - sidecar may be incomplete."
     }
 } catch {
     Write-Warning "Could not run capability check: $_"

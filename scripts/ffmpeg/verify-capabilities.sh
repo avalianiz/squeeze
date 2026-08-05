@@ -38,9 +38,11 @@ need_muxer() {
 
 need_encoder libx264
 need_encoder aac
+need_encoder mjpeg
 need_filter scale
 need_filter fps
 need_muxer mp4
+need_muxer image2
 need_demuxer mov
 need_demuxer matroska
 need_demuxer avi

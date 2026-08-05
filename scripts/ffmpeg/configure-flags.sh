@@ -51,6 +51,7 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
 
   --enable-muxer=mp4
   --enable-muxer=mov
+  --enable-muxer=image2
   --enable-muxer=null
 
   --enable-parser=h264
@@ -116,6 +117,7 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --enable-decoder=pcm_dvd
 
   --enable-encoder=libx264
+  --enable-encoder=mjpeg
   --enable-encoder=aac
 
   --enable-filter=scale
