@@ -5,6 +5,7 @@ use crate::models::{CompressionSettings, JobKind, OutputMode, TrimRange};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStatus {
+    Draft,
     Queued,
     Running,
     Succeeded,
@@ -28,6 +29,10 @@ pub struct CompressionJob {
     pub output_name: Option<String>,
     #[serde(default)]
     pub skipped: bool,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub retried: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

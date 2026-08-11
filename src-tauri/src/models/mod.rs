@@ -4,6 +4,7 @@ mod job;
 mod job_kind;
 mod media;
 mod output_mode;
+mod plan;
 mod settings;
 mod trim;
 
@@ -13,5 +14,6 @@ pub use job::{CompressionJob, JobProgress, JobStatus};
 pub use job_kind::JobKind;
 pub use media::Media;
 pub use output_mode::OutputMode;
-pub use settings::{CompressionSettings, VideoCodec};
+pub use plan::PlanPreview;
+pub use settings::{CompressionSettings, JobSettingsInput};
 pub use trim::TrimRange;
