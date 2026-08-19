@@ -15,7 +15,9 @@ use crate::filesystem::output::{
 use crate::media::binaries;
 use crate::media::bitrate::{plan_bitrates, scale_video_bitrate, BitratePlan};
 use crate::media::ffprobe;
-use crate::models::{CompressResult, CompressionSettings, JobKind, OutputMode, TrimRange, VideoCodec};
+use crate::models::{
+    CompressResult, CompressionSettings, JobKind, Media, OutputMode, TrimRange,
+};
 
 pub async fn run_job<F>(
     path: &Path,
@@ -46,6 +48,7 @@ where
         JobKind::Trim => {
             trim_job(
                 path,
+                settings,
                 output_mode,
                 trim,
                 output_name.as_deref(),
@@ -100,6 +103,8 @@ where
             output_path: media.path,
             output_size_bytes: media.size_bytes,
             skipped: true,
+            note: None,
+            retried: false,
         });
     }
 
@@ -122,6 +127,7 @@ where
         .map(|m| m.len())
         .map_err(|e| AppError::Io(format!("couldn't read temp output: {e}")))?;
 
+    let mut retried = false;
     if size > settings.target_size_bytes {
         if cancel.load(Ordering::SeqCst) {
             let _ = std::fs::remove_file(&temp);
@@ -140,6 +146,7 @@ where
             &on_progress,
         )
         .await?;
+        retried = true;
         size = std::fs::metadata(&temp)
             .map(|m| m.len())
             .map_err(|e| AppError::Io(format!("couldn't read temp output: {e}")))?;
@@ -153,8 +160,9 @@ where
     if size > settings.target_size_bytes {
         let _ = std::fs::remove_file(&temp);
         return Err(AppError::EncodingFailed(format!(
-            "still {} bytes after retry, target was {}",
-            size, settings.target_size_bytes
+            "{:.1} MB after retry, over the {:.0} MB target",
+            size as f64 / (1024.0 * 1024.0),
+            settings.target_size_bytes as f64 / (1024.0 * 1024.0)
         )));
     }
 
@@ -162,15 +170,24 @@ where
 
     on_progress(encode_duration, encode_duration, 100.0);
 
+    let note = if retried {
+        Some("landed after 85% bitrate retry".to_string())
+    } else {
+        None
+    };
+
     Ok(CompressResult {
         output_path: final_out.display().to_string(),
         output_size_bytes: size,
         skipped: false,
+        note,
+        retried,
     })
 }
 
 async fn trim_job<F>(
     path: &Path,
+    settings: &CompressionSettings,
     output_mode: OutputMode,
     trim: Option<TrimRange>,
     output_name: Option<&str>,
@@ -189,27 +206,89 @@ where
     }
 
     let media = ffprobe::probe(path).await?;
-    let range = trim.ok_or(AppError::InvalidTrimRange)?;
-    range.validate(media.duration_seconds)?;
+    let mute = settings.mute_audio;
+    let active_trim = match trim {
+        Some(range) => {
+            range.validate(media.duration_seconds)?;
+            if range.covers_whole(media.duration_seconds) {
+                None
+            } else {
+                Some(range)
+            }
+        }
+        None => None,
+    };
 
-    if range.covers_whole(media.duration_seconds) {
+    if active_trim.is_none() && !mute {
         return Err(AppError::EncodingFailed(
-            "move the trim handles before trimming".to_string(),
+            "move the trim handles or mute audio".to_string(),
         ));
     }
 
-    let duration = range.duration();
+    let duration = active_trim
+        .as_ref()
+        .map(TrimRange::duration)
+        .unwrap_or(media.duration_seconds);
     let temp = temp_path(path);
 
-    copy_trim_to(
-        path,
-        &temp,
-        &range,
-        duration,
-        cancel.clone(),
-        &on_progress,
-    )
-    .await?;
+    // A stream copy can only cut on keyframes. Short clips often have one
+    // keyframe at the start, so the copy comes back as the full file. Keep the
+    // copy when it lands on the requested duration; otherwise re-encode that
+    // span at the source bitrate (no target-size squeeze). A cut that starts
+    // after 0 is re-encoded immediately, because a keyframe seek can return
+    // the right length from the wrong part of the file.
+    let copy_is_safe = active_trim
+        .as_ref()
+        .map(|range| range.start_seconds <= 0.05)
+        .unwrap_or(true);
+
+    let mut exact = false;
+    let mut copied = false;
+    if copy_is_safe {
+        match copy_edit_to(
+            path,
+            &temp,
+            active_trim.as_ref(),
+            mute,
+            duration,
+            cancel.clone(),
+            &on_progress,
+        )
+        .await
+        {
+            Ok(()) => {
+                copied = output_matches(&temp, active_trim.as_ref(), mute, duration).await;
+                if !copied {
+                    let _ = std::fs::remove_file(&temp);
+                }
+            }
+            Err(AppError::Cancelled) => return Err(AppError::Cancelled),
+            Err(_) => {
+                let _ = std::fs::remove_file(&temp);
+            }
+        }
+    }
+
+    if !copied {
+        exact = true;
+        exact_edit_to(
+            path,
+            &temp,
+            &media,
+            active_trim.as_ref(),
+            mute,
+            duration,
+            cancel.clone(),
+            &on_progress,
+        )
+        .await?;
+        if !output_matches(&temp, active_trim.as_ref(), mute, duration).await {
+            let _ = std::fs::remove_file(&temp);
+            return Err(AppError::EncodingFailed(
+                "trim or mute did not land in the output".to_string(),
+            ));
+        }
+    }
 
     if cancel.load(Ordering::SeqCst) {
         let _ = std::fs::remove_file(&temp);
@@ -220,14 +299,27 @@ where
         .map(|m| m.len())
         .map_err(|e| AppError::Io(format!("couldn't read temp output: {e}")))?;
 
-    let final_out = finalize_output(path, &temp, output_mode, output_name, "-trimmed")?;
+    let suffix = if active_trim.is_some() {
+        "-trimmed"
+    } else {
+        "-muted"
+    };
+    let final_out = finalize_output(path, &temp, output_mode, output_name, suffix)?;
 
     on_progress(duration, duration, 100.0);
+
+    let note = if exact && active_trim.is_some() {
+        Some("Exact cut at the original quality".to_string())
+    } else {
+        None
+    };
 
     Ok(CompressResult {
         output_path: final_out.display().to_string(),
         output_size_bytes: size,
         skipped: false,
+        note,
+        retried: false,
     })
 }
 
@@ -346,10 +438,44 @@ fn recover_orphaned_backup(
     })
 }
 
-async fn copy_trim_to<F>(
+async fn output_matches(
+    output: &Path,
+    trim: Option<&TrimRange>,
+    mute: bool,
+    requested_seconds: f64,
+) -> bool {
+    let Ok(probed) = ffprobe::probe(output).await else {
+        return false;
+    };
+    if mute && probed.audio_codec.is_some() {
+        return false;
+    }
+    let requested = trim
+        .map(TrimRange::duration)
+        .unwrap_or(requested_seconds);
+    duration_matches(requested, probed.duration_seconds)
+}
+
+fn duration_matches(requested: f64, actual: f64) -> bool {
+    (actual - requested).abs() <= 0.35
+}
+
+fn source_video_bitrate_bps(size_bytes: u64, duration_seconds: f64, keep_audio: bool) -> u64 {
+    let duration = duration_seconds.max(0.1);
+    let total = (size_bytes as f64) * 8.0 / duration;
+    let video = if keep_audio {
+        total - 160_000.0
+    } else {
+        total
+    };
+    video.clamp(200_000.0, 80_000_000.0).round() as u64
+}
+
+async fn copy_edit_to<F>(
     input: &Path,
     output: &Path,
-    trim: &TrimRange,
+    trim: Option<&TrimRange>,
+    mute: bool,
     duration_seconds: f64,
     cancel: Arc<AtomicBool>,
     on_progress: &F,
@@ -357,115 +483,117 @@ async fn copy_trim_to<F>(
 where
     F: Fn(f64, f64, f64) + Send + Sync,
 {
-    let ffmpeg = binaries::resolve("ffmpeg")?;
+    let mut args = vec!["-y".to_string()];
 
-    if output.exists() {
-        let _ = std::fs::remove_file(output);
+    if let Some(range) = trim {
+        args.push("-ss".to_string());
+        args.push(format!("{:.3}", range.start_seconds));
     }
 
-    let args = [
-        "-y".to_string(),
-        "-ss".to_string(),
-        format!("{:.3}", trim.start_seconds),
+    args.extend([
         "-i".to_string(),
         input.display().to_string(),
-        "-t".to_string(),
-        format!("{:.3}", trim.duration()),
-        "-map".to_string(),
-        "0".to_string(),
+    ]);
+
+    if let Some(range) = trim {
+        args.push("-t".to_string());
+        args.push(format!("{:.3}", range.duration()));
+    }
+
+    args.extend(["-map".to_string(), "0:v:0".to_string()]);
+    if mute {
+        args.push("-an".to_string());
+    } else {
+        args.extend(["-map".to_string(), "0:a?".to_string()]);
+    }
+
+    args.extend([
         "-c".to_string(),
         "copy".to_string(),
         "-avoid_negative_ts".to_string(),
         "make_zero".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
         "-nostats".to_string(),
         "-progress".to_string(),
         "pipe:1".to_string(),
         output.display().to_string(),
-    ];
+    ]);
 
-    let mut cmd = Command::new(&ffmpeg);
-    cmd.args(&args);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    binaries::hide_console(&mut cmd);
+    run_ffmpeg(&args, output, duration_seconds, cancel, on_progress).await
+}
 
-    let mut child = cmd.spawn().map_err(|err| {
-        if err.kind() == io::ErrorKind::NotFound {
-            AppError::FfmpegNotFound
-        } else {
-            AppError::EncodingFailed(err.to_string())
-        }
-    })?;
+async fn exact_edit_to<F>(
+    input: &Path,
+    output: &Path,
+    media: &Media,
+    trim: Option<&TrimRange>,
+    mute: bool,
+    duration_seconds: f64,
+    cancel: Arc<AtomicBool>,
+    on_progress: &F,
+) -> Result<(), AppError>
+where
+    F: Fn(f64, f64, f64) + Send + Sync,
+{
+    let video_bps = source_video_bitrate_bps(media.size_bytes, media.duration_seconds, !mute);
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| AppError::EncodingFailed("missing ffmpeg stdout".to_string()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| AppError::EncodingFailed("missing ffmpeg stderr".to_string()))?;
-
-    let stderr_task = tauri::async_runtime::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        let mut tail = String::new();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if tail.len() > 2000 {
-                tail.clear();
-            }
-            tail.push_str(&line);
-            tail.push('\n');
-        }
-        tail
-    });
-
-    let mut lines = BufReader::new(stdout).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if cancel.load(Ordering::SeqCst) {
-            let _ = child.kill().await;
-            let _ = std::fs::remove_file(output);
-            return Err(AppError::Cancelled);
-        }
-
-        if let Some(elapsed) = parse_out_time_seconds(&line) {
-            let pct = if duration_seconds > 0.0 {
-                ((elapsed / duration_seconds) * 100.0).clamp(0.0, 99.0)
-            } else {
-                0.0
-            };
-            on_progress(elapsed, duration_seconds, pct);
-        }
+    let mut args = vec!["-y".to_string()];
+    if let Some(range) = trim {
+        // Input seek plus a decode is frame-accurate, unlike a stream copy.
+        args.push("-ss".to_string());
+        args.push(format!("{:.3}", range.start_seconds));
+    }
+    args.extend([
+        "-i".to_string(),
+        input.display().to_string(),
+    ]);
+    if let Some(range) = trim {
+        args.push("-t".to_string());
+        args.push(format!("{:.3}", range.duration()));
     }
 
-    let status = child
-        .wait()
-        .await
-        .map_err(|e| AppError::EncodingFailed(e.to_string()))?;
-
-    let stderr_tail = stderr_task.await.unwrap_or_default();
-
-    if cancel.load(Ordering::SeqCst) {
-        let _ = std::fs::remove_file(output);
-        return Err(AppError::Cancelled);
+    args.extend(["-map".to_string(), "0:v:0".to_string()]);
+    if mute {
+        args.push("-an".to_string());
+    } else {
+        args.extend(["-map".to_string(), "0:a?".to_string()]);
     }
 
-    if !status.success() {
-        let _ = std::fs::remove_file(output);
-        let msg = stderr_tail.trim();
-        return Err(AppError::EncodingFailed(if msg.is_empty() {
-            format!("trim failed with {status}")
-        } else {
-            msg.chars()
-                .rev()
-                .take(400)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect()
-        }));
+    args.extend([
+        "-c:v".to_string(),
+        "libx264".to_string(),
+        "-preset".to_string(),
+        "veryfast".to_string(),
+        "-b:v".to_string(),
+        video_bps.to_string(),
+        "-maxrate".to_string(),
+        video_bps.to_string(),
+        "-bufsize".to_string(),
+        (video_bps * 2).to_string(),
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+    ]);
+
+    if !mute {
+        args.extend([
+            "-c:a".to_string(),
+            "aac".to_string(),
+            "-b:a".to_string(),
+            "160000".to_string(),
+        ]);
     }
 
-    Ok(())
+    args.extend([
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+        "-nostats".to_string(),
+        "-progress".to_string(),
+        "pipe:1".to_string(),
+        output.display().to_string(),
+    ]);
+
+    run_ffmpeg(&args, output, duration_seconds, cancel, on_progress).await
 }
 
 async fn encode_to<F>(
@@ -481,17 +609,12 @@ async fn encode_to<F>(
 where
     F: Fn(f64, f64, f64) + Send + Sync,
 {
-    let ffmpeg = binaries::resolve("ffmpeg")?;
-
     if output.exists() {
         let _ = std::fs::remove_file(output);
     }
 
     let video_b = plan.video_bitrate_bps.to_string();
-    let audio_b = plan.audio_bitrate_bps.to_string();
-    let codec = match settings.video_codec {
-        VideoCodec::H264 => "libx264",
-    };
+    let mute = settings.mute_audio || plan.audio_bitrate_bps == 0;
 
     let mut args = vec![
         "-y".to_string(),
@@ -509,20 +632,38 @@ where
     args.extend([
         "-map".to_string(),
         "0:v:0".to_string(),
-        "-map".to_string(),
-        "0:a?".to_string(),
+    ]);
+
+    if mute {
+        args.push("-an".to_string());
+    } else {
+        args.extend([
+            "-map".to_string(),
+            "0:a?".to_string(),
+        ]);
+    }
+
+    args.extend([
         "-c:v".to_string(),
-        codec.to_string(),
+        "libx264".to_string(),
         "-b:v".to_string(),
         video_b,
         "-maxrate".to_string(),
         plan.video_bitrate_bps.to_string(),
         "-bufsize".to_string(),
         (plan.video_bitrate_bps * 2).to_string(),
-        "-c:a".to_string(),
-        "aac".to_string(),
-        "-b:a".to_string(),
-        audio_b,
+    ]);
+
+    if !mute {
+        args.extend([
+            "-c:a".to_string(),
+            "aac".to_string(),
+            "-b:a".to_string(),
+            plan.audio_bitrate_bps.to_string(),
+        ]);
+    }
+
+    args.extend([
         "-movflags".to_string(),
         "+faststart".to_string(),
         "-nostats".to_string(),
@@ -550,8 +691,27 @@ where
 
     args.push(output.display().to_string());
 
+    run_ffmpeg(&args, output, duration_seconds, cancel, on_progress).await
+}
+
+async fn run_ffmpeg<F>(
+    args: &[String],
+    output: &Path,
+    duration_seconds: f64,
+    cancel: Arc<AtomicBool>,
+    on_progress: &F,
+) -> Result<(), AppError>
+where
+    F: Fn(f64, f64, f64) + Send + Sync,
+{
+    let ffmpeg = binaries::resolve("ffmpeg")?;
+
+    if output.exists() {
+        let _ = std::fs::remove_file(output);
+    }
+
     let mut cmd = Command::new(&ffmpeg);
-    cmd.args(&args);
+    cmd.args(args);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     binaries::hide_console(&mut cmd);
@@ -657,4 +817,25 @@ fn parse_hms(value: &str) -> Option<f64> {
     let m: f64 = parts.next()?.parse().ok()?;
     let s: f64 = parts.next()?.parse().ok()?;
     Some(h * 3600.0 + m * 60.0 + s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{duration_matches, source_video_bitrate_bps};
+
+    #[test]
+    fn copy_must_match_requested_length() {
+        assert!(duration_matches(2.0, 2.1));
+        assert!(!duration_matches(2.0, 4.0));
+        assert!(!duration_matches(2.0, 3.2));
+    }
+
+    #[test]
+    fn source_bitrate_stays_near_the_file() {
+        // 4 seconds, 4_000_000 bytes → 8 Mbps. Mute keeps that for video.
+        let muted = source_video_bitrate_bps(4_000_000, 4.0, false);
+        assert!((muted as i64 - 8_000_000).abs() < 2);
+        let with_audio = source_video_bitrate_bps(4_000_000, 4.0, true);
+        assert!((with_audio as i64 - 7_840_000).abs() < 2);
+    }
 }
