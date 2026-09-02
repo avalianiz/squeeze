@@ -9,7 +9,9 @@ pub fn temp_path(input: &Path) -> PathBuf {
 
 pub fn beside_original(input: &Path, output_name: Option<&str>, suffix: &str) -> PathBuf {
     let stem = resolve_stem(input, output_name);
-    input.with_file_name(format!("{stem}{suffix}.mp4"))
+    // Custom names are used as-is; only auto-named outputs get -squeezed/-trimmed.
+    let tag = if output_name.is_some() { "" } else { suffix };
+    input.with_file_name(format!("{stem}{tag}.mp4"))
 }
 
 pub fn beside_original_unique(input: &Path, output_name: Option<&str>, suffix: &str) -> PathBuf {
@@ -19,18 +21,16 @@ pub fn beside_original_unique(input: &Path, output_name: Option<&str>, suffix: &
     }
 
     let stem = resolve_stem(input, output_name);
+    let tag = if output_name.is_some() { "" } else { suffix };
     let parent = input.parent().unwrap_or_else(|| Path::new("."));
     for n in 2..10_000 {
-        let candidate = parent.join(format!("{stem}{suffix}-{n}.mp4"));
+        let candidate = parent.join(format!("{stem}{tag}-{n}.mp4"));
         if is_usable_output(&candidate, input) {
             return candidate;
         }
     }
 
-    parent.join(format!(
-        "{stem}{suffix}-{}.mp4",
-        uuid::Uuid::new_v4()
-    ))
+    parent.join(format!("{stem}{tag}-{}.mp4", uuid::Uuid::new_v4()))
 }
 
 fn is_usable_output(candidate: &Path, input: &Path) -> bool {
@@ -108,15 +108,27 @@ mod tests {
         assert_eq!(sanitize_stem("cool/clip:1"), "cool-clip-1");
         assert_eq!(
             beside_original(Path::new(r"C:\vids\a.mp4"), Some("my clip"), "-squeezed"),
-            PathBuf::from(r"C:\vids\my clip-squeezed.mp4")
+            PathBuf::from(r"C:\vids\my clip.mp4")
+        );
+    }
+
+    #[test]
+    fn custom_name_skips_suffix() {
+        assert_eq!(
+            beside_original(Path::new(r"C:\vids\a.mp4"), Some("custom-name"), "-squeezed"),
+            PathBuf::from(r"C:\vids\custom-name.mp4")
+        );
+        assert_eq!(
+            beside_original(Path::new(r"C:\vids\a.mp4"), None, "-squeezed"),
+            PathBuf::from(r"C:\vids\a-squeezed.mp4")
         );
     }
 
     #[test]
     fn beside_never_returns_input_path() {
-        let input = Path::new(r"C:\vids\clip-squeezed.mp4");
+        let input = Path::new(r"C:\vids\clip.mp4");
         let dest = beside_original_unique(input, Some("clip"), "-squeezed");
         assert!(!paths_equal(&dest, input));
-        assert_eq!(dest, PathBuf::from(r"C:\vids\clip-squeezed-2.mp4"));
+        assert_eq!(dest, PathBuf::from(r"C:\vids\clip-2.mp4"));
     }
 }
