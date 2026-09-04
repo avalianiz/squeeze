@@ -48,8 +48,14 @@ pub fn discover_videos(root: &Path) -> Result<Vec<PathBuf>, AppError> {
     Ok(found)
 }
 
-pub fn is_supported_video(path: &Path) -> bool {
-    is_source_video(path)
+/// Extension-only check for files the user explicitly picked.
+/// Folder discovery still skips Squeeze outputs via [`is_source_video`].
+pub fn has_video_extension(path: &Path) -> bool {
+    let ext = match path.extension().and_then(|e| e.to_str()) {
+        Some(e) => e.to_ascii_lowercase(),
+        None => return false,
+    };
+    VIDEO_EXTENSIONS.iter().any(|ok| *ok == ext)
 }
 
 fn is_source_video(path: &Path) -> bool {
@@ -62,12 +68,7 @@ fn is_source_video(path: &Path) -> bool {
         return false;
     }
 
-    let ext = match path.extension().and_then(|e| e.to_str()) {
-        Some(e) => e.to_ascii_lowercase(),
-        None => return false,
-    };
-
-    VIDEO_EXTENSIONS.iter().any(|ok| *ok == ext)
+    has_video_extension(path)
 }
 
 fn is_squeeze_generated_name(file_name_lower: &str) -> bool {
@@ -82,7 +83,9 @@ fn is_squeeze_generated_name(file_name_lower: &str) -> bool {
         None => file_name_lower,
     };
 
-    stem_has_generated_suffix(stem, "-squeezed") || stem_has_generated_suffix(stem, "-trimmed")
+    stem_has_generated_suffix(stem, "-squeezed")
+        || stem_has_generated_suffix(stem, "-trimmed")
+        || stem_has_generated_suffix(stem, "-muted")
 }
 
 fn stem_has_generated_suffix(stem: &str, suffix: &str) -> bool {
@@ -109,6 +112,8 @@ mod tests {
         assert!(!is_source_video(Path::new("clip-squeezed-2.mp4")));
         assert!(!is_source_video(Path::new("clip-trimmed.mp4")));
         assert!(!is_source_video(Path::new("clip-trimmed-3.mp4")));
+        assert!(!is_source_video(Path::new("clip-muted.mp4")));
+        assert!(!is_source_video(Path::new("clip-muted-2.mp4")));
         assert!(!is_source_video(Path::new("clip.tmp-compressed.mp4")));
         assert!(!is_source_video(Path::new("clip.squeeze-backup.mp4")));
     }
