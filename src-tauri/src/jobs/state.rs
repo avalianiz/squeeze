@@ -35,13 +35,18 @@ impl JobManager {
         kind: JobKind,
         output_name: Option<String>,
         settings: CompressionSettings,
+        start: bool,
     ) -> CompressionJob {
         let id = uuid::Uuid::new_v4().to_string();
         let job = CompressionJob {
             id: id.clone(),
             input_path,
             output_path: None,
-            status: JobStatus::Queued,
+            status: if start {
+                JobStatus::Queued
+            } else {
+                JobStatus::Draft
+            },
             error: None,
             progress_percent: 0.0,
             output_size_bytes: None,
@@ -51,6 +56,8 @@ impl JobManager {
             kind,
             output_name,
             skipped: false,
+            note: None,
+            retried: false,
         };
 
         let mut inner = self.inner.lock().await;
@@ -60,7 +67,9 @@ impl JobManager {
         inner.jobs.push(job.clone());
         drop(inner);
 
-        self.wake.notify_one();
+        if start {
+            self.wake.notify_one();
+        }
         job
     }
 
@@ -72,6 +81,7 @@ impl JobManager {
         kind: JobKind,
         output_name: Option<String>,
         settings: CompressionSettings,
+        start: bool,
     ) -> Option<CompressionJob> {
         {
             let inner = self.inner.lock().await;
@@ -84,8 +94,16 @@ impl JobManager {
             }
         }
         Some(
-            self.enqueue(input_path, output_mode, trim, kind, output_name, settings)
-                .await,
+            self.enqueue(
+                input_path,
+                output_mode,
+                trim,
+                kind,
+                output_name,
+                settings,
+                start,
+            )
+            .await,
         )
     }
 
@@ -102,7 +120,7 @@ impl JobManager {
 
         if let Some(job) = inner.jobs.iter_mut().find(|j| j.id == job_id) {
             match job.status {
-                JobStatus::Queued => {
+                JobStatus::Draft | JobStatus::Queued => {
                     job.status = JobStatus::Cancelled;
                     job.error = Some("cancelled".to_string());
                     return true;
@@ -130,6 +148,8 @@ impl JobManager {
             job.output_path = None;
             job.output_size_bytes = None;
             job.skipped = false;
+            job.note = None;
+            job.retried = false;
             job.clone()
         };
 
@@ -172,6 +192,8 @@ impl JobManager {
         output_path: String,
         output_size_bytes: u64,
         skipped: bool,
+        note: Option<String>,
+        retried: bool,
     ) {
         let mut inner = self.inner.lock().await;
         if let Some(job) = inner.jobs.iter_mut().find(|j| j.id == job_id) {
@@ -180,8 +202,75 @@ impl JobManager {
             job.output_path = Some(output_path);
             job.output_size_bytes = Some(output_size_bytes);
             job.skipped = skipped;
+            job.note = note;
+            job.retried = retried;
             job.error = None;
         }
+    }
+
+    pub async fn update_queued(
+        &self,
+        job_id: &str,
+        trim: Option<TrimRange>,
+        kind: JobKind,
+        output_name: Option<String>,
+        settings: CompressionSettings,
+        output_mode: OutputMode,
+    ) -> Option<CompressionJob> {
+        let mut inner = self.inner.lock().await;
+        let job = inner.jobs.iter_mut().find(|j| j.id == job_id)?;
+        if !matches!(job.status, JobStatus::Draft | JobStatus::Queued) {
+            return None;
+        }
+        job.trim = trim;
+        job.kind = kind;
+        job.output_name = output_name;
+        job.settings = settings;
+        job.output_mode = output_mode;
+        Some(job.clone())
+    }
+
+    /// Promote a single draft job to queued and wake the worker.
+    pub async fn start_draft(&self, job_id: &str) -> bool {
+        let started = {
+            let mut inner = self.inner.lock().await;
+            let Some(job) = inner.jobs.iter_mut().find(|j| j.id == job_id) else {
+                return false;
+            };
+            if job.status != JobStatus::Draft {
+                return false;
+            }
+            job.status = JobStatus::Queued;
+            true
+        };
+        if started {
+            self.wake.notify_one();
+        }
+        started
+    }
+
+    /// Promote every draft job to queued and wake the worker.
+    pub async fn start_all_drafts(&self) -> usize {
+        let mut started = 0;
+        {
+            let mut inner = self.inner.lock().await;
+            for job in inner.jobs.iter_mut() {
+                if job.status == JobStatus::Draft {
+                    job.status = JobStatus::Queued;
+                    started += 1;
+                }
+            }
+        }
+        if started > 0 {
+            self.wake.notify_one();
+        }
+        started
+    }
+
+    pub async fn has_active(&self) -> bool {
+        self.inner.lock().await.jobs.iter().any(|j| {
+            matches!(j.status, JobStatus::Queued | JobStatus::Running)
+        })
     }
 
     pub async fn set_failed(&self, job_id: &str, error: String) {
@@ -207,7 +296,10 @@ impl JobManager {
         let mut inner = self.inner.lock().await;
         let before = inner.jobs.len();
         inner.jobs.retain(|job| {
-            matches!(job.status, JobStatus::Queued | JobStatus::Running)
+            matches!(
+                job.status,
+                JobStatus::Draft | JobStatus::Queued | JobStatus::Running
+            )
         });
         let keep: std::collections::HashSet<_> =
             inner.jobs.iter().map(|j| j.id.clone()).collect();
@@ -222,7 +314,7 @@ impl JobManager {
 
         for job in inner.jobs.iter_mut() {
             match job.status {
-                JobStatus::Queued => {
+                JobStatus::Draft | JobStatus::Queued => {
                     job.status = JobStatus::Cancelled;
                     job.error = Some("cancelled".to_string());
                     count += 1;
