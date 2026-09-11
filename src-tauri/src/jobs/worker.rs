@@ -1,7 +1,8 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+use tauri::window::{ProgressBarState, ProgressBarStatus};
 
 use crate::error::AppError;
 use crate::jobs::state::JobManager;
@@ -15,6 +16,33 @@ pub fn spawn_worker(app: AppHandle, manager: Arc<JobManager>) {
             run_one(&app, manager.clone(), job.id.clone()).await;
         }
     });
+}
+
+fn set_taskbar_progress(app: &AppHandle, percent: Option<u64>) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let state = match percent {
+        Some(p) => ProgressBarState {
+            status: Some(ProgressBarStatus::Normal),
+            progress: Some(p.min(100)),
+        },
+        None => ProgressBarState {
+            status: Some(ProgressBarStatus::None),
+            progress: None,
+        },
+    };
+    let _ = window.set_progress_bar(state);
+}
+
+fn notify_queue_idle(app: &AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app
+        .notification()
+        .builder()
+        .title("Squeeze")
+        .body("Queue finished")
+        .show();
 }
 
 async fn run_one(app: &AppHandle, manager: Arc<JobManager>, job_id: String) {
@@ -42,10 +70,12 @@ async fn run_one(app: &AppHandle, manager: Arc<JobManager>, job_id: String) {
     }
 
     manager.set_running(&job_id).await;
+    set_taskbar_progress(app, Some(0));
     let _ = app.emit("job-updated", manager.list().await);
 
     if let Err(err) = crate::media::binaries::ensure() {
         manager.set_failed(&job_id, err.to_string()).await;
+        set_taskbar_progress(app, None);
         let _ = app.emit("job-updated", manager.list().await);
         return;
     }
@@ -68,6 +98,7 @@ async fn run_one(app: &AppHandle, manager: Arc<JobManager>, job_id: String) {
             let job_id = progress_id.clone();
             tauri::async_runtime::spawn(async move {
                 manager.set_progress(&job_id, percentage).await;
+                set_taskbar_progress(&app, Some(percentage.round() as u64));
                 let _ = app.emit(
                     "job-progress",
                     JobProgress {
@@ -91,6 +122,8 @@ async fn run_one(app: &AppHandle, manager: Arc<JobManager>, job_id: String) {
                     done.output_path,
                     done.output_size_bytes,
                     done.skipped,
+                    done.note,
+                    done.retried,
                 )
                 .await;
         }
@@ -100,6 +133,14 @@ async fn run_one(app: &AppHandle, manager: Arc<JobManager>, job_id: String) {
         Err(err) => {
             manager.set_failed(&job_id, err.to_string()).await;
         }
+    }
+
+    let still_active = manager.has_active().await;
+    if still_active {
+        set_taskbar_progress(app, Some(0));
+    } else {
+        set_taskbar_progress(app, None);
+        notify_queue_idle(app);
     }
 
     let _ = app.emit("job-updated", manager.list().await);
