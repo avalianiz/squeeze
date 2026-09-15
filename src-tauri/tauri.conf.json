@@ -32,8 +32,20 @@
       }
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI2MDFBN0FCQzM0NTQxMkEKUldRcVFVWERxNmNCSmlzaEpIVFdtaFdxMU1RS2llMXdmOVZaNlkyaEFvM3FUTXVyREx2QndsbWgK",
+      "endpoints": [
+        "https://github.com/avalianiz/squeeze/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["nsis", "msi", "app", "dmg", "deb", "appimage"],
     "publisher": "avalianiz",
     "copyright": "Copyright © 2026 avalianiz",
@@ -44,6 +56,50 @@
     "externalBin": [
       "binaries/ffmpeg",
       "binaries/ffprobe"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["mp4"],
+        "name": "Squeeze.mp4",
+        "description": "MP4 video",
+        "mimeType": "video/mp4",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["mkv"],
+        "name": "Squeeze.mkv",
+        "description": "Matroska video",
+        "mimeType": "video/x-matroska",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["mov"],
+        "name": "Squeeze.mov",
+        "description": "QuickTime video",
+        "mimeType": "video/quicktime",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["avi"],
+        "name": "Squeeze.avi",
+        "description": "AVI video",
+        "mimeType": "video/x-msvideo",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["webm"],
+        "name": "Squeeze.webm",
+        "description": "WebM video",
+        "mimeType": "video/webm",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["m4v"],
+        "name": "Squeeze.m4v",
+        "description": "M4V video",
+        "mimeType": "video/x-m4v",
+        "role": "Viewer"
+      }
     ],
     "windows": {
       "nsis": {
