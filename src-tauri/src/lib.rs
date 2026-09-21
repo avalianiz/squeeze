@@ -8,9 +8,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use error::AppError;
+use filesystem::discovery;
 use jobs::state::JobManager;
 use jobs::worker;
-use models::{CompressionJob, CompressResult, CompressionSettings, Media};
+use models::{CompressionJob, CompressResult, CompressionSettings, Media, OutputMode};
 use tauri::State;
 
 #[tauri::command]
@@ -26,12 +27,50 @@ async fn compress_media(path: String) -> Result<CompressResult, AppError> {
 #[tauri::command]
 async fn enqueue_job(
     path: String,
+    replace: bool,
     manager: State<'_, Arc<JobManager>>,
 ) -> Result<CompressionJob, AppError> {
     if !Path::new(&path).exists() {
         return Err(AppError::InputNotFound(path));
     }
-    Ok(manager.enqueue(path).await)
+    let mode = if replace {
+        OutputMode::Replace
+    } else {
+        OutputMode::CopyBeside
+    };
+    Ok(manager.enqueue(path, mode).await)
+}
+
+#[tauri::command]
+async fn enqueue_folder(
+    path: String,
+    recursive: bool,
+    replace: bool,
+    manager: State<'_, Arc<JobManager>>,
+) -> Result<Vec<CompressionJob>, AppError> {
+    let root = Path::new(&path);
+    let videos = discovery::discover_videos(root, recursive)?;
+    if videos.is_empty() {
+        return Err(AppError::InvalidVideo(
+            "no supported videos in that folder".to_string(),
+        ));
+    }
+
+    let mode = if replace {
+        OutputMode::Replace
+    } else {
+        OutputMode::CopyBeside
+    };
+
+    let mut jobs = Vec::with_capacity(videos.len());
+    for video in videos {
+        jobs.push(
+            manager
+                .enqueue(video.display().to_string(), mode)
+                .await,
+        );
+    }
+    Ok(jobs)
 }
 
 #[tauri::command]
@@ -74,6 +113,7 @@ pub fn run() {
             probe_media,
             compress_media,
             enqueue_job,
+            enqueue_folder,
             list_jobs,
             cancel_job,
             retry_job

@@ -46,6 +46,22 @@
   justify-content: center;
 }
 
+.options {
+  display: flex;
+  justify-content: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  margin: 0.75rem 0 1rem;
+  font-size: 0.95rem;
+}
+
+.options label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
 a {
   font-weight: 500;
   color: #646cff;

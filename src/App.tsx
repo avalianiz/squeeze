@@ -22,6 +22,8 @@ type JobStatus =
   | "failed"
   | "cancelled";
 
+type OutputMode = "copy_beside" | "replace";
+
 type CompressionJob = {
   id: string;
   input_path: string;
@@ -30,6 +32,7 @@ type CompressionJob = {
   error: string | null;
   progress_percent: number;
   output_size_bytes: number | null;
+  output_mode: OutputMode;
 };
 
 type JobProgress = {
@@ -71,6 +74,8 @@ function App() {
   const [jobs, setJobs] = useState<CompressionJob[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [recursive, setRecursive] = useState(true);
+  const [replaceOriginals, setReplaceOriginals] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -102,7 +107,7 @@ function App() {
     };
   }, []);
 
-  async function pickAndProbe() {
+  async function pickVideos() {
     const selected = await open({
       multiple: true,
       directory: false,
@@ -122,18 +127,58 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      // show metadata for the last picked one, queue gets all of them
       const probed = await invoke<Media>("probe_media", {
         path: paths[paths.length - 1],
       });
       setMedia(probed);
 
       for (const path of paths) {
-        await invoke<CompressionJob>("enqueue_job", { path });
+        await invoke<CompressionJob>("enqueue_job", {
+          path,
+          replace: replaceOriginals,
+        });
       }
       setJobs(await invoke<CompressionJob[]>("list_jobs"));
     } catch (err) {
       setError(typeof err === "string" ? err : "failed to add jobs");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function pickFolder() {
+    const selected = await open({
+      multiple: false,
+      directory: true,
+      title: "Pick a folder of videos",
+    });
+
+    if (selected === null) {
+      return;
+    }
+
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) {
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    try {
+      const added = await invoke<CompressionJob[]>("enqueue_folder", {
+        path,
+        recursive,
+        replace: replaceOriginals,
+      });
+      if (added.length > 0) {
+        const probed = await invoke<Media>("probe_media", {
+          path: added[added.length - 1].input_path,
+        });
+        setMedia(probed);
+      }
+      setJobs(await invoke<CompressionJob[]>("list_jobs"));
+    } catch (err) {
+      setError(typeof err === "string" ? err : "failed to add folder");
     } finally {
       setBusy(false);
     }
@@ -160,11 +205,33 @@ function App() {
   return (
     <main className="container">
       <h1>Squeeze</h1>
-      <p>Queue videos and compress them one at a time for Discord.</p>
+      <p>Queue videos or a whole folder and compress them for Discord.</p>
+
+      <div className="options">
+        <label>
+          <input
+            type="checkbox"
+            checked={recursive}
+            onChange={(e) => setRecursive(e.target.checked)}
+          />
+          Include subfolders
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={replaceOriginals}
+            onChange={(e) => setReplaceOriginals(e.target.checked)}
+          />
+          Replace originals (safe)
+        </label>
+      </div>
 
       <div className="row">
-        <button type="button" onClick={pickAndProbe} disabled={busy}>
+        <button type="button" onClick={pickVideos} disabled={busy}>
           {busy ? "Adding..." : "Add videos"}
+        </button>
+        <button type="button" onClick={pickFolder} disabled={busy}>
+          {busy ? "Adding..." : "Add folder"}
         </button>
       </div>
 
@@ -191,13 +258,16 @@ function App() {
 
       {jobs.length > 0 && (
         <div className="queue">
-          <h2>Queue</h2>
+          <h2>Queue ({jobs.length})</h2>
           <ul>
             {jobs.map((job) => (
               <li key={job.id} className="queue-item">
                 <div className="queue-top">
                   <strong>{fileName(job.input_path)}</strong>
-                  <span className="status">{job.status}</span>
+                  <span className="status">
+                    {job.status}
+                    {job.output_mode === "replace" ? " · replace" : " · copy"}
+                  </span>
                 </div>
                 {job.status === "running" && (
                   <div className="bar">
