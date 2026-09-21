@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
 type Media = {
@@ -13,26 +14,92 @@ type Media = {
   audio_codec: string | null;
 };
 
+type CompressResult = {
+  output_path: string;
+  output_size_bytes: number;
+  skipped: boolean;
+};
+
+const VIDEO_FILTERS = [
+  {
+    name: "Video",
+    extensions: ["mp4", "mkv", "mov", "webm", "avi", "m4v", "wmv", "flv"],
+  },
+];
+
 function formatSize(bytes: number) {
   const mb = bytes / (1024 * 1024);
   return `${mb.toFixed(2)} MB`;
 }
 
+function formatDuration(seconds: number) {
+  const total = Math.floor(seconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function fileName(path: string) {
+  const parts = path.split(/[/\\]/);
+  return parts[parts.length - 1] || path;
+}
+
 function App() {
-  const [path, setPath] = useState("");
   const [media, setMedia] = useState<Media | null>(null);
+  const [result, setResult] = useState<CompressResult | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  async function probe() {
+  async function pickAndProbe() {
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      title: "Pick a video",
+      filters: VIDEO_FILTERS,
+    });
+
+    if (selected === null) {
+      return;
+    }
+
+    const path = Array.isArray(selected) ? selected[0] : selected;
+    if (!path) {
+      return;
+    }
+
     setBusy(true);
     setError("");
     setMedia(null);
+    setResult(null);
     try {
-      const result = await invoke<Media>("probe_media", { path });
-      setMedia(result);
+      const probed = await invoke<Media>("probe_media", { path });
+      setMedia(probed);
     } catch (err) {
       setError(typeof err === "string" ? err : "probe failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function compress() {
+    if (!media) {
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    setResult(null);
+    try {
+      const compressed = await invoke<CompressResult>("compress_media", {
+        path: media.path,
+      });
+      setResult(compressed);
+    } catch (err) {
+      setError(typeof err === "string" ? err : "compress failed");
     } finally {
       setBusy(false);
     }
@@ -41,41 +108,64 @@ function App() {
   return (
     <main className="container">
       <h1>Squeeze</h1>
-      <p>Paste a video path and probe it with ffprobe.</p>
+      <p>Pick a video, then squeeze it under Discord's 20 MB limit.</p>
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          probe();
-        }}
-      >
-        <input
-          id="greet-input"
-          value={path}
-          onChange={(e) => setPath(e.currentTarget.value)}
-          placeholder="C:\Videos\clip.mp4"
-        />
-        <button type="submit" disabled={busy || !path.trim()}>
-          {busy ? "Probing..." : "Probe"}
+      <div className="row">
+        <button type="button" onClick={pickAndProbe} disabled={busy}>
+          {busy && !media ? "Probing..." : "Choose video"}
         </button>
-      </form>
+        <button
+          type="button"
+          onClick={compress}
+          disabled={busy || !media}
+        >
+          {busy && media ? "Compressing..." : "Compress for Discord"}
+        </button>
+      </div>
 
-      {error && <p>{error}</p>}
+      {error && <p className="error">{error}</p>}
 
       {media && (
-        <ul>
-          <li>
-            {media.width ?? "?"}×{media.height ?? "?"}
-          </li>
-          <li>{media.duration_seconds.toFixed(2)}s</li>
-          <li>{formatSize(media.size_bytes)}</li>
-          <li>video: {media.video_codec ?? "none"}</li>
-          <li>audio: {media.audio_codec ?? "none"}</li>
-          <li>
-            fps: {media.frame_rate != null ? media.frame_rate.toFixed(2) : "?"}
-          </li>
-        </ul>
+        <div className="meta">
+          <p className="meta-name">{fileName(media.path)}</p>
+          <dl>
+            <dt>Resolution</dt>
+            <dd>
+              {media.width ?? "?"}×{media.height ?? "?"}
+            </dd>
+            <dt>Duration</dt>
+            <dd>
+              {formatDuration(media.duration_seconds)} (
+              {media.duration_seconds.toFixed(2)}s)
+            </dd>
+            <dt>Size</dt>
+            <dd>{formatSize(media.size_bytes)}</dd>
+            <dt>Video</dt>
+            <dd>{media.video_codec ?? "none"}</dd>
+            <dt>Audio</dt>
+            <dd>{media.audio_codec ?? "none"}</dd>
+            <dt>FPS</dt>
+            <dd>
+              {media.frame_rate != null ? media.frame_rate.toFixed(2) : "?"}
+            </dd>
+          </dl>
+        </div>
+      )}
+
+      {result && (
+        <div className="meta">
+          <p className="meta-name">
+            {result.skipped
+              ? "Already under target — no encode needed"
+              : "Compressed"}
+          </p>
+          <dl>
+            <dt>Output</dt>
+            <dd>{fileName(result.output_path)}</dd>
+            <dt>Size</dt>
+            <dd>{formatSize(result.output_size_bytes)}</dd>
+          </dl>
+        </div>
       )}
     </main>
   );
