@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::models::{CompressionSettings, OutputMode};
+use crate::models::{CompressionSettings, OutputMode, TrimRange};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -23,6 +23,7 @@ pub struct CompressionJob {
     pub output_size_bytes: Option<u64>,
     pub settings: CompressionSettings,
     pub output_mode: OutputMode,
+    pub trim: Option<TrimRange>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
