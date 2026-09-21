@@ -12,9 +12,18 @@ use filesystem::discovery;
 use jobs::state::JobManager;
 use jobs::worker;
 use models::{
-    CompressionJob, CompressResult, CompressionSettings, Media, OutputMode, TrimRange,
+    CompressionJob, CompressResult, CompressionSettings, DropIngestResult, Media, OutputMode,
+    TrimRange,
 };
 use tauri::State;
+
+fn output_mode(replace: bool) -> OutputMode {
+    if replace {
+        OutputMode::Replace
+    } else {
+        OutputMode::CopyBeside
+    }
+}
 
 #[tauri::command]
 async fn probe_media(path: String) -> Result<Media, AppError> {
@@ -36,12 +45,7 @@ async fn enqueue_job(
     if !Path::new(&path).exists() {
         return Err(AppError::InputNotFound(path));
     }
-    let mode = if replace {
-        OutputMode::Replace
-    } else {
-        OutputMode::CopyBeside
-    };
-    Ok(manager.enqueue(path, mode, trim).await)
+    Ok(manager.enqueue(path, output_mode(replace), trim).await)
 }
 
 #[tauri::command]
@@ -59,12 +63,7 @@ async fn enqueue_folder(
         ));
     }
 
-    let mode = if replace {
-        OutputMode::Replace
-    } else {
-        OutputMode::CopyBeside
-    };
-
+    let mode = output_mode(replace);
     let mut jobs = Vec::with_capacity(videos.len());
     for video in videos {
         jobs.push(
@@ -74,6 +73,90 @@ async fn enqueue_folder(
         );
     }
     Ok(jobs)
+}
+
+// drag-drop / multi path entry. one lone file → preview, otherwise queue them.
+#[tauri::command]
+async fn ingest_paths(
+    paths: Vec<String>,
+    recursive: bool,
+    replace: bool,
+    manager: State<'_, Arc<JobManager>>,
+) -> Result<DropIngestResult, AppError> {
+    if paths.is_empty() {
+        return Err(AppError::InvalidVideo("nothing was dropped".to_string()));
+    }
+
+    let mode = output_mode(replace);
+
+    if paths.len() == 1 {
+        let only = Path::new(&paths[0]);
+        if only.is_dir() {
+            let videos = discovery::discover_videos(only, recursive)?;
+            if videos.is_empty() {
+                return Err(AppError::InvalidVideo(
+                    "no supported videos in that folder".to_string(),
+                ));
+            }
+            let mut added = 0;
+            let preview = videos.last().map(|p| p.display().to_string());
+            for video in videos {
+                manager
+                    .enqueue(video.display().to_string(), mode, None)
+                    .await;
+                added += 1;
+            }
+            return Ok(DropIngestResult {
+                jobs_added: added,
+                preview_path: preview,
+            });
+        }
+
+        if discovery::is_supported_video(only) {
+            return Ok(DropIngestResult {
+                jobs_added: 0,
+                preview_path: Some(only.display().to_string()),
+            });
+        }
+
+        return Err(AppError::InvalidVideo(
+            "that file isnt a supported video".to_string(),
+        ));
+    }
+
+    let mut added = 0;
+    let mut last_video: Option<String> = None;
+
+    for raw in paths {
+        let path = Path::new(&raw);
+        if path.is_dir() {
+            let videos = discovery::discover_videos(path, recursive)?;
+            for video in videos {
+                last_video = Some(video.display().to_string());
+                manager
+                    .enqueue(video.display().to_string(), mode, None)
+                    .await;
+                added += 1;
+            }
+        } else if discovery::is_supported_video(path) {
+            last_video = Some(path.display().to_string());
+            manager
+                .enqueue(path.display().to_string(), mode, None)
+                .await;
+            added += 1;
+        }
+    }
+
+    if added == 0 {
+        return Err(AppError::InvalidVideo(
+            "no supported videos in that drop".to_string(),
+        ));
+    }
+
+    Ok(DropIngestResult {
+        jobs_added: added,
+        preview_path: last_video,
+    })
 }
 
 #[tauri::command]
@@ -100,6 +183,16 @@ async fn retry_job(
         .ok_or_else(|| AppError::EncodingFailed("cant retry that job".to_string()))
 }
 
+#[tauri::command]
+async fn clear_finished_jobs(manager: State<'_, Arc<JobManager>>) -> Result<usize, AppError> {
+    Ok(manager.clear_finished().await)
+}
+
+#[tauri::command]
+async fn cancel_all_jobs(manager: State<'_, Arc<JobManager>>) -> Result<usize, AppError> {
+    Ok(manager.cancel_all_pending().await)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let manager = Arc::new(JobManager::new());
@@ -117,9 +210,12 @@ pub fn run() {
             compress_media,
             enqueue_job,
             enqueue_folder,
+            ingest_paths,
             list_jobs,
             cancel_job,
-            retry_job
+            retry_job,
+            clear_finished_jobs,
+            cancel_all_jobs
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
