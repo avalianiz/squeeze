@@ -1,21 +1,19 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 use tokio::process::Command;
 
 use crate::error::AppError;
+use crate::media::binaries;
 use crate::models::Media;
 
-/// Run ffprobe on a file and turn the JSON into our Media struct.
-///
-/// We spawn ffprobe as a real process with an arg list (never a shell string)
-/// so paths with spaces don't break and nobody can inject extra flags.
+// ask ffprobe for streams/format json then map it into Media
 pub async fn probe(path: &Path) -> Result<Media, AppError> {
     if !path.exists() {
         return Err(AppError::InputNotFound(path.display().to_string()));
     }
 
-    let ffprobe = resolve_ffprobe()?;
+    let ffprobe = binaries::resolve("ffprobe").map_err(|_| AppError::FfprobeNotFound)?;
     let mut cmd = Command::new(&ffprobe);
     cmd.args([
         "-v",
@@ -26,13 +24,7 @@ pub async fn probe(path: &Path) -> Result<Media, AppError> {
         "-show_streams",
     ]);
     cmd.arg(path);
-
-    // Don't flash a console window on Windows when we spawn ffprobe.
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    binaries::hide_console(&mut cmd);
 
     let output = cmd.output().await.map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
@@ -57,24 +49,6 @@ pub async fn probe(path: &Path) -> Result<Media, AppError> {
     })?;
 
     media_from_probe(path, parsed)
-}
-
-fn resolve_ffprobe() -> Result<PathBuf, AppError> {
-    #[cfg(windows)]
-    let name = "ffprobe.exe";
-    #[cfg(not(windows))]
-    let name = "ffprobe";
-
-    // Dev-time: src-tauri/binaries/ffprobe.exe next to Cargo.toml
-    let bundled = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("binaries")
-        .join(name);
-    if bundled.exists() {
-        return Ok(bundled);
-    }
-
-    // Fall back to PATH (whatever `where ffprobe` would find)
-    Ok(PathBuf::from(name))
 }
 
 fn media_from_probe(path: &Path, probe: FfprobeJson) -> Result<Media, AppError> {
@@ -146,7 +120,6 @@ fn parse_frame_rate(value: &str) -> Option<f64> {
     }
 }
 
-// Only the ffprobe JSON fields we actually use.
 #[derive(Debug, Deserialize)]
 struct FfprobeJson {
     #[serde(default)]
