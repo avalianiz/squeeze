@@ -10,6 +10,7 @@ pub enum AppError {
     OutputAlreadyExists(String),
     InvalidVideo(String),
     TargetBitrateTooLow,
+    Cancelled,
 }
 
 impl std::fmt::Display for AppError {
@@ -30,6 +31,7 @@ impl std::fmt::Display for AppError {
                 f,
                 "video is too long/short to fit the target size with usable quality"
             ),
+            AppError::Cancelled => write!(f, "cancelled"),
         }
     }
 }
