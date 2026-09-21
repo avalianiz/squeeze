@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify};
 
-use crate::models::{CompressionJob, CompressionSettings, JobStatus, OutputMode};
+use crate::models::{CompressionJob, CompressionSettings, JobStatus, OutputMode, TrimRange};
 
 // all the job list + cancel flags live here. worker peeks at this.
 pub struct JobManager {
@@ -28,7 +28,12 @@ impl JobManager {
         }
     }
 
-    pub async fn enqueue(&self, input_path: String, output_mode: OutputMode) -> CompressionJob {
+    pub async fn enqueue(
+        &self,
+        input_path: String,
+        output_mode: OutputMode,
+        trim: Option<TrimRange>,
+    ) -> CompressionJob {
         let id = uuid::Uuid::new_v4().to_string();
         let job = CompressionJob {
             id: id.clone(),
@@ -40,6 +45,7 @@ impl JobManager {
             output_size_bytes: None,
             settings: CompressionSettings::discord(),
             output_mode,
+            trim,
         };
 
         let mut inner = self.inner.lock().await;
@@ -83,15 +89,15 @@ impl JobManager {
 
     pub async fn retry(&self, job_id: &str) -> Option<CompressionJob> {
         let inner = self.inner.lock().await;
-        let (input, mode) = {
+        let (input, mode, trim) = {
             let job = inner.jobs.iter().find(|j| j.id == job_id)?;
             if !matches!(job.status, JobStatus::Failed | JobStatus::Cancelled) {
                 return None;
             }
-            (job.input_path.clone(), job.output_mode)
+            (job.input_path.clone(), job.output_mode, job.trim.clone())
         };
         drop(inner);
-        Some(self.enqueue(input, mode).await)
+        Some(self.enqueue(input, mode, trim).await)
     }
 
     pub async fn cancel_flag(&self, job_id: &str) -> Option<Arc<AtomicBool>> {

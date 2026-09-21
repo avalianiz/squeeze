@@ -14,7 +14,7 @@ use crate::filesystem::output::{
 use crate::media::binaries;
 use crate::media::bitrate::{plan_bitrates, scale_video_bitrate, BitratePlan};
 use crate::media::ffprobe;
-use crate::models::{CompressResult, CompressionSettings, OutputMode, VideoCodec};
+use crate::models::{CompressResult, CompressionSettings, OutputMode, TrimRange, VideoCodec};
 
 // old one-shot path the ui used before the queue existed
 pub async fn compress(
@@ -25,6 +25,7 @@ pub async fn compress(
         path,
         settings,
         OutputMode::CopyBeside,
+        None,
         Arc::new(AtomicBool::new(false)),
         |_, _, _| {},
     )
@@ -36,6 +37,7 @@ pub async fn compress_job<F>(
     path: &Path,
     settings: &CompressionSettings,
     output_mode: OutputMode,
+    trim: Option<TrimRange>,
     cancel: Arc<AtomicBool>,
     on_progress: F,
 ) -> Result<CompressResult, AppError>
@@ -52,8 +54,24 @@ where
 
     let media = ffprobe::probe(path).await?;
 
-    if media.size_bytes <= settings.target_size_bytes {
-        on_progress(media.duration_seconds, media.duration_seconds, 100.0);
+    if let Some(ref range) = trim {
+        range.validate(media.duration_seconds)?;
+    }
+
+    let active_trim = trim
+        .as_ref()
+        .filter(|range| !range.covers_whole(media.duration_seconds));
+
+    let encode_duration = match active_trim {
+        Some(range) => range.duration(),
+        None => media.duration_seconds,
+    };
+
+    let needs_trim = active_trim.is_some();
+
+    // already small enough and they didnt ask to cut anything
+    if media.size_bytes <= settings.target_size_bytes && !needs_trim {
+        on_progress(encode_duration, encode_duration, 100.0);
         return Ok(CompressResult {
             output_path: media.path,
             output_size_bytes: media.size_bytes,
@@ -61,7 +79,7 @@ where
         });
     }
 
-    let plan = plan_bitrates(media.duration_seconds, settings)?;
+    let plan = plan_bitrates(encode_duration, settings)?;
     let temp = temp_path(path);
 
     encode_to(
@@ -69,7 +87,8 @@ where
         &temp,
         settings,
         &plan,
-        media.duration_seconds,
+        encode_duration,
+        active_trim,
         cancel.clone(),
         &on_progress,
     )
@@ -91,7 +110,8 @@ where
             &temp,
             settings,
             &retry,
-            media.duration_seconds,
+            encode_duration,
+            active_trim,
             cancel.clone(),
             &on_progress,
         )
@@ -126,7 +146,7 @@ where
         OutputMode::Replace => finalize_replace(path, &temp)?,
     };
 
-    on_progress(media.duration_seconds, media.duration_seconds, 100.0);
+    on_progress(encode_duration, encode_duration, 100.0);
 
     Ok(CompressResult {
         output_path: final_out.display().to_string(),
@@ -191,6 +211,7 @@ async fn encode_to<F>(
     settings: &CompressionSettings,
     plan: &BitratePlan,
     duration_seconds: f64,
+    trim: Option<&TrimRange>,
     cancel: Arc<AtomicBool>,
     on_progress: &F,
 ) -> Result<(), AppError>
@@ -209,10 +230,21 @@ where
         VideoCodec::H264 => "libx264",
     };
 
+    // -i first, then -ss/-t so the cut is accurate while we re-encode anyway
     let mut args = vec![
         "-y".to_string(),
         "-i".to_string(),
         input.display().to_string(),
+    ];
+
+    if let Some(range) = trim {
+        args.push("-ss".to_string());
+        args.push(format!("{:.3}", range.start_seconds));
+        args.push("-t".to_string());
+        args.push(format!("{:.3}", range.duration()));
+    }
+
+    args.extend([
         "-map".to_string(),
         "0:v:0".to_string(),
         "-map".to_string(),
@@ -234,7 +266,7 @@ where
         "-nostats".to_string(),
         "-progress".to_string(),
         "pipe:1".to_string(),
-    ];
+    ]);
 
     let mut filters: Vec<String> = Vec::new();
     if let (Some(w), Some(h)) = (settings.max_width, settings.max_height) {
