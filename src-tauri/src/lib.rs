@@ -11,7 +11,9 @@ use error::AppError;
 use filesystem::discovery;
 use jobs::state::JobManager;
 use jobs::worker;
-use models::{CompressionJob, CompressResult, CompressionSettings, Media, OutputMode};
+use models::{
+    CompressionJob, CompressResult, CompressionSettings, Media, OutputMode, TrimRange,
+};
 use tauri::State;
 
 #[tauri::command]
@@ -28,6 +30,7 @@ async fn compress_media(path: String) -> Result<CompressResult, AppError> {
 async fn enqueue_job(
     path: String,
     replace: bool,
+    trim: Option<TrimRange>,
     manager: State<'_, Arc<JobManager>>,
 ) -> Result<CompressionJob, AppError> {
     if !Path::new(&path).exists() {
@@ -38,7 +41,7 @@ async fn enqueue_job(
     } else {
         OutputMode::CopyBeside
     };
-    Ok(manager.enqueue(path, mode).await)
+    Ok(manager.enqueue(path, mode, trim).await)
 }
 
 #[tauri::command]
@@ -66,7 +69,7 @@ async fn enqueue_folder(
     for video in videos {
         jobs.push(
             manager
-                .enqueue(video.display().to_string(), mode)
+                .enqueue(video.display().to_string(), mode, None)
                 .await,
         );
     }

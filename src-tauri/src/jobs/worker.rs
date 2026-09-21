@@ -53,6 +53,7 @@ async fn run_one(app: &AppHandle, manager: Arc<JobManager>, job_id: String) {
         std::path::Path::new(&job.input_path),
         &job.settings,
         job.output_mode,
+        job.trim.clone(),
         cancel,
         move |elapsed, duration, percentage| {
             let manager = manager_progress.clone();

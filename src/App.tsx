@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useRef, useState } from "react";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
@@ -24,6 +24,11 @@ type JobStatus =
 
 type OutputMode = "copy_beside" | "replace";
 
+type TrimRange = {
+  start_seconds: number;
+  end_seconds: number;
+};
+
 type CompressionJob = {
   id: string;
   input_path: string;
@@ -33,6 +38,7 @@ type CompressionJob = {
   progress_percent: number;
   output_size_bytes: number | null;
   output_mode: OutputMode;
+  trim: TrimRange | null;
 };
 
 type JobProgress = {
@@ -54,7 +60,7 @@ function formatSize(bytes: number) {
 }
 
 function formatDuration(seconds: number) {
-  const total = Math.floor(seconds);
+  const total = Math.max(0, Math.floor(seconds));
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
@@ -70,12 +76,17 @@ function fileName(path: string) {
 }
 
 function App() {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const [media, setMedia] = useState<Media | null>(null);
   const [jobs, setJobs] = useState<CompressionJob[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [recursive, setRecursive] = useState(true);
   const [replaceOriginals, setReplaceOriginals] = useState(false);
+  const [trimStart, setTrimStart] = useState(0);
+  const [trimEnd, setTrimEnd] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [playing, setPlaying] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -107,6 +118,14 @@ function App() {
     };
   }, []);
 
+  function loadPreview(probed: Media) {
+    setMedia(probed);
+    setTrimStart(0);
+    setTrimEnd(probed.duration_seconds);
+    setCurrentTime(0);
+    setPlaying(false);
+  }
+
   async function pickVideos() {
     const selected = await open({
       multiple: true,
@@ -127,18 +146,24 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      const probed = await invoke<Media>("probe_media", {
-        path: paths[paths.length - 1],
-      });
-      setMedia(probed);
-
-      for (const path of paths) {
-        await invoke<CompressionJob>("enqueue_job", {
-          path,
-          replace: replaceOriginals,
+      if (paths.length === 1) {
+        // one file: preview + trim first, user hits add to queue
+        const probed = await invoke<Media>("probe_media", { path: paths[0] });
+        loadPreview(probed);
+      } else {
+        for (const path of paths) {
+          await invoke<CompressionJob>("enqueue_job", {
+            path,
+            replace: replaceOriginals,
+            trim: null,
+          });
+        }
+        const probed = await invoke<Media>("probe_media", {
+          path: paths[paths.length - 1],
         });
+        loadPreview(probed);
+        setJobs(await invoke<CompressionJob[]>("list_jobs"));
       }
-      setJobs(await invoke<CompressionJob[]>("list_jobs"));
     } catch (err) {
       setError(typeof err === "string" ? err : "failed to add jobs");
     } finally {
@@ -174,11 +199,37 @@ function App() {
         const probed = await invoke<Media>("probe_media", {
           path: added[added.length - 1].input_path,
         });
-        setMedia(probed);
+        loadPreview(probed);
       }
       setJobs(await invoke<CompressionJob[]>("list_jobs"));
     } catch (err) {
       setError(typeof err === "string" ? err : "failed to add folder");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addCurrentToQueue() {
+    if (!media) {
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    try {
+      const trim =
+        trimStart > 0.05 || trimEnd < media.duration_seconds - 0.05
+          ? { start_seconds: trimStart, end_seconds: trimEnd }
+          : null;
+
+      await invoke<CompressionJob>("enqueue_job", {
+        path: media.path,
+        replace: replaceOriginals,
+        trim,
+      });
+      setJobs(await invoke<CompressionJob[]>("list_jobs"));
+    } catch (err) {
+      setError(typeof err === "string" ? err : "failed to queue video");
     } finally {
       setBusy(false);
     }
@@ -202,10 +253,62 @@ function App() {
     }
   }
 
+  function togglePlay() {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+    if (video.paused) {
+      if (video.currentTime < trimStart || video.currentTime >= trimEnd) {
+        video.currentTime = trimStart;
+      }
+      void video.play();
+      setPlaying(true);
+    } else {
+      video.pause();
+      setPlaying(false);
+    }
+  }
+
+  function onTimeUpdate() {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+    setCurrentTime(video.currentTime);
+    if (video.currentTime >= trimEnd) {
+      video.pause();
+      video.currentTime = trimEnd;
+      setPlaying(false);
+    }
+  }
+
+  function seekTo(seconds: number) {
+    const video = videoRef.current;
+    if (!video) {
+      return;
+    }
+    video.currentTime = seconds;
+    setCurrentTime(seconds);
+  }
+
+  function onStartChange(value: number) {
+    const next = Math.min(value, trimEnd - 0.1);
+    setTrimStart(next);
+    seekTo(next);
+  }
+
+  function onEndChange(value: number) {
+    const next = Math.max(value, trimStart + 0.1);
+    setTrimEnd(next);
+  }
+
+  const previewSrc = media ? convertFileSrc(media.path) : "";
+
   return (
     <main className="container">
       <h1>Squeeze</h1>
-      <p>Queue videos or a whole folder and compress them for Discord.</p>
+      <p>Queue videos, trim if you want, then compress for Discord.</p>
 
       <div className="options">
         <label>
@@ -228,31 +331,73 @@ function App() {
 
       <div className="row">
         <button type="button" onClick={pickVideos} disabled={busy}>
-          {busy ? "Adding..." : "Add videos"}
+          {busy ? "Working..." : "Add videos"}
         </button>
         <button type="button" onClick={pickFolder} disabled={busy}>
-          {busy ? "Adding..." : "Add folder"}
+          {busy ? "Working..." : "Add folder"}
         </button>
       </div>
 
       {error && <p className="error">{error}</p>}
 
       {media && (
-        <div className="meta">
-          <p className="meta-name">Last picked: {fileName(media.path)}</p>
-          <dl>
-            <dt>Resolution</dt>
-            <dd>
+        <div className="preview">
+          <p className="meta-name">{fileName(media.path)}</p>
+          <video
+            ref={videoRef}
+            key={media.path}
+            src={previewSrc}
+            className="preview-video"
+            onTimeUpdate={onTimeUpdate}
+            onPause={() => setPlaying(false)}
+            onPlay={() => setPlaying(true)}
+          />
+
+          <div className="trim-controls">
+            <div className="row">
+              <button type="button" onClick={togglePlay}>
+                {playing ? "Pause" : "Play"}
+              </button>
+              <span>
+                {formatDuration(currentTime)} / {formatDuration(media.duration_seconds)}
+              </span>
+            </div>
+
+            <label className="trim-label">
+              Start {formatDuration(trimStart)}
+              <input
+                type="range"
+                min={0}
+                max={media.duration_seconds}
+                step={0.05}
+                value={trimStart}
+                onChange={(e) => onStartChange(Number(e.target.value))}
+              />
+            </label>
+
+            <label className="trim-label">
+              End {formatDuration(trimEnd)}
+              <input
+                type="range"
+                min={0}
+                max={media.duration_seconds}
+                step={0.05}
+                value={trimEnd}
+                onChange={(e) => onEndChange(Number(e.target.value))}
+              />
+            </label>
+
+            <p className="trim-summary">
+              Keep {formatDuration(trimEnd - trimStart)} · {formatSize(media.size_bytes)} ·{" "}
               {media.width ?? "?"}×{media.height ?? "?"}
-            </dd>
-            <dt>Duration</dt>
-            <dd>
-              {formatDuration(media.duration_seconds)} (
-              {media.duration_seconds.toFixed(2)}s)
-            </dd>
-            <dt>Size</dt>
-            <dd>{formatSize(media.size_bytes)}</dd>
-          </dl>
+            </p>
+
+            <div className="row">
+              <button type="button" onClick={addCurrentToQueue} disabled={busy}>
+                Add to queue
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -267,6 +412,7 @@ function App() {
                   <span className="status">
                     {job.status}
                     {job.output_mode === "replace" ? " · replace" : " · copy"}
+                    {job.trim ? " · trim" : ""}
                   </span>
                 </div>
                 {job.status === "running" && (
@@ -280,6 +426,12 @@ function App() {
                 <div className="queue-meta">
                   {job.status === "running" && (
                     <span>{job.progress_percent.toFixed(0)}%</span>
+                  )}
+                  {job.trim && (
+                    <span>
+                      {formatDuration(job.trim.start_seconds)}–
+                      {formatDuration(job.trim.end_seconds)}
+                    </span>
                   )}
                   {job.output_size_bytes != null && (
                     <span>{formatSize(job.output_size_bytes)}</span>
