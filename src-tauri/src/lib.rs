@@ -9,11 +9,12 @@ use std::sync::Arc;
 
 use error::AppError;
 use filesystem::discovery;
+use filesystem::output::sanitize_stem;
 use jobs::state::JobManager;
 use jobs::worker;
 use models::{
-    CompressionJob, CompressResult, CompressionSettings, DropIngestResult, Media, OutputMode,
-    TrimRange,
+    CompressionJob, CompressResult, CompressionSettings, DropIngestResult, JobKind, Media,
+    OutputMode, TrimRange,
 };
 use tauri::State;
 
@@ -23,6 +24,10 @@ fn output_mode(replace: bool) -> OutputMode {
     } else {
         OutputMode::CopyBeside
     }
+}
+
+fn clean_output_name(name: Option<String>) -> Option<String> {
+    name.map(|n| sanitize_stem(&n)).filter(|n| !n.is_empty())
 }
 
 #[tauri::command]
@@ -40,12 +45,25 @@ async fn enqueue_job(
     path: String,
     replace: bool,
     trim: Option<TrimRange>,
+    kind: JobKind,
+    output_name: Option<String>,
     manager: State<'_, Arc<JobManager>>,
 ) -> Result<CompressionJob, AppError> {
     if !Path::new(&path).exists() {
         return Err(AppError::InputNotFound(path));
     }
-    Ok(manager.enqueue(path, output_mode(replace), trim).await)
+    if kind == JobKind::Trim && trim.is_none() {
+        return Err(AppError::InvalidTrimRange);
+    }
+    Ok(manager
+        .enqueue(
+            path,
+            output_mode(replace),
+            trim,
+            kind,
+            clean_output_name(output_name),
+        )
+        .await)
 }
 
 #[tauri::command]
@@ -68,7 +86,13 @@ async fn enqueue_folder(
     for video in videos {
         jobs.push(
             manager
-                .enqueue(video.display().to_string(), mode, None)
+                .enqueue(
+                    video.display().to_string(),
+                    mode,
+                    None,
+                    JobKind::Squeeze,
+                    None,
+                )
                 .await,
         );
     }
@@ -88,27 +112,49 @@ async fn ingest_paths(
     }
 
     let mode = output_mode(replace);
+    let mut folder_roots = Vec::new();
 
     if paths.len() == 1 {
         let only = Path::new(&paths[0]);
         if only.is_dir() {
+            let root = only.display().to_string();
             let videos = discovery::discover_videos(only, recursive)?;
             if videos.is_empty() {
-                return Err(AppError::InvalidVideo(
-                    "no supported videos in that folder".to_string(),
-                ));
+                if recursive {
+                    return Err(AppError::InvalidVideo(
+                        "no supported videos in that folder".to_string(),
+                    ));
+                }
+                // keep the root so "include subfolders" can expand later
+                folder_roots.push(root);
+                return Ok(DropIngestResult {
+                    jobs_added: 0,
+                    preview_path: None,
+                    folder_roots,
+                });
             }
             let mut added = 0;
             let preview = videos.last().map(|p| p.display().to_string());
             for video in videos {
-                manager
-                    .enqueue(video.display().to_string(), mode, None)
-                    .await;
-                added += 1;
+                if manager
+                    .enqueue_new(
+                        video.display().to_string(),
+                        mode,
+                        None,
+                        JobKind::Squeeze,
+                        None,
+                    )
+                    .await
+                    .is_some()
+                {
+                    added += 1;
+                }
             }
+            folder_roots.push(root);
             return Ok(DropIngestResult {
                 jobs_added: added,
                 preview_path: preview,
+                folder_roots,
             });
         }
 
@@ -116,6 +162,7 @@ async fn ingest_paths(
             return Ok(DropIngestResult {
                 jobs_added: 0,
                 preview_path: Some(only.display().to_string()),
+                folder_roots,
             });
         }
 
@@ -130,24 +177,58 @@ async fn ingest_paths(
     for raw in paths {
         let path = Path::new(&raw);
         if path.is_dir() {
+            folder_roots.push(path.display().to_string());
             let videos = discovery::discover_videos(path, recursive)?;
             for video in videos {
                 last_video = Some(video.display().to_string());
-                manager
-                    .enqueue(video.display().to_string(), mode, None)
-                    .await;
-                added += 1;
+                if manager
+                    .enqueue_new(
+                        video.display().to_string(),
+                        mode,
+                        None,
+                        JobKind::Squeeze,
+                        None,
+                    )
+                    .await
+                    .is_some()
+                {
+                    added += 1;
+                }
             }
         } else if discovery::is_supported_video(path) {
             last_video = Some(path.display().to_string());
-            manager
-                .enqueue(path.display().to_string(), mode, None)
-                .await;
-            added += 1;
+            if manager
+                .enqueue_new(
+                    path.display().to_string(),
+                    mode,
+                    None,
+                    JobKind::Squeeze,
+                    None,
+                )
+                .await
+                .is_some()
+            {
+                added += 1;
+            }
         }
     }
 
-    if added == 0 {
+    if added == 0 && folder_roots.is_empty() && last_video.is_none() {
+        return Err(AppError::InvalidVideo(
+            "no supported videos in that drop".to_string(),
+        ));
+    }
+
+    if added == 0 && last_video.is_none() && !folder_roots.is_empty() {
+        // folder expand found nothing new — still ok
+        return Ok(DropIngestResult {
+            jobs_added: 0,
+            preview_path: None,
+            folder_roots,
+        });
+    }
+
+    if added == 0 && last_video.is_none() {
         return Err(AppError::InvalidVideo(
             "no supported videos in that drop".to_string(),
         ));
@@ -156,6 +237,7 @@ async fn ingest_paths(
     Ok(DropIngestResult {
         jobs_added: added,
         preview_path: last_video,
+        folder_roots,
     })
 }
 

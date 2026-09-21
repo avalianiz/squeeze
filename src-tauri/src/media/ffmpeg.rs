@@ -14,18 +14,20 @@ use crate::filesystem::output::{
 use crate::media::binaries;
 use crate::media::bitrate::{plan_bitrates, scale_video_bitrate, BitratePlan};
 use crate::media::ffprobe;
-use crate::models::{CompressResult, CompressionSettings, OutputMode, TrimRange, VideoCodec};
+use crate::models::{CompressResult, CompressionSettings, JobKind, OutputMode, TrimRange, VideoCodec};
 
 // old one-shot path the ui used before the queue existed
 pub async fn compress(
     path: &Path,
     settings: &CompressionSettings,
 ) -> Result<CompressResult, AppError> {
-    compress_job(
+    run_job(
         path,
         settings,
         OutputMode::CopyBeside,
         None,
+        None,
+        JobKind::Squeeze,
         Arc::new(AtomicBool::new(false)),
         |_, _, _| {},
     )
@@ -33,11 +35,52 @@ pub async fn compress(
 }
 
 // queue calls this so we can cancel + drip progress back out
-pub async fn compress_job<F>(
+pub async fn run_job<F>(
     path: &Path,
     settings: &CompressionSettings,
     output_mode: OutputMode,
     trim: Option<TrimRange>,
+    output_name: Option<String>,
+    kind: JobKind,
+    cancel: Arc<AtomicBool>,
+    on_progress: F,
+) -> Result<CompressResult, AppError>
+where
+    F: Fn(f64, f64, f64) + Send + Sync,
+{
+    match kind {
+        JobKind::Squeeze => {
+            compress_job(
+                path,
+                settings,
+                output_mode,
+                trim,
+                output_name.as_deref(),
+                cancel,
+                on_progress,
+            )
+            .await
+        }
+        JobKind::Trim => {
+            trim_job(
+                path,
+                output_mode,
+                trim,
+                output_name.as_deref(),
+                cancel,
+                on_progress,
+            )
+            .await
+        }
+    }
+}
+
+async fn compress_job<F>(
+    path: &Path,
+    settings: &CompressionSettings,
+    output_mode: OutputMode,
+    trim: Option<TrimRange>,
+    output_name: Option<&str>,
     cancel: Arc<AtomicBool>,
     on_progress: F,
 ) -> Result<CompressResult, AppError>
@@ -134,17 +177,7 @@ where
         )));
     }
 
-    let final_out = match output_mode {
-        OutputMode::CopyBeside => {
-            let dest = beside_original_unique(path);
-            std::fs::rename(&temp, &dest).map_err(|e| {
-                let _ = std::fs::remove_file(&temp);
-                AppError::EncodingFailed(e.to_string())
-            })?;
-            dest
-        }
-        OutputMode::Replace => finalize_replace(path, &temp)?,
-    };
+    let final_out = finalize_output(path, &temp, output_mode, output_name, "-squeezed")?;
 
     on_progress(encode_duration, encode_duration, 100.0);
 
@@ -155,9 +188,95 @@ where
     })
 }
 
+async fn trim_job<F>(
+    path: &Path,
+    output_mode: OutputMode,
+    trim: Option<TrimRange>,
+    output_name: Option<&str>,
+    cancel: Arc<AtomicBool>,
+    on_progress: F,
+) -> Result<CompressResult, AppError>
+where
+    F: Fn(f64, f64, f64) + Send + Sync,
+{
+    if cancel.load(Ordering::SeqCst) {
+        return Err(AppError::Cancelled);
+    }
+
+    if !path.exists() {
+        return Err(AppError::InputNotFound(path.display().to_string()));
+    }
+
+    let media = ffprobe::probe(path).await?;
+    let range = trim.ok_or(AppError::InvalidTrimRange)?;
+    range.validate(media.duration_seconds)?;
+
+    if range.covers_whole(media.duration_seconds) {
+        return Err(AppError::EncodingFailed(
+            "move the trim handles before trimming".to_string(),
+        ));
+    }
+
+    let duration = range.duration();
+    let temp = temp_path(path);
+
+    copy_trim_to(
+        path,
+        &temp,
+        &range,
+        duration,
+        cancel.clone(),
+        &on_progress,
+    )
+    .await?;
+
+    if cancel.load(Ordering::SeqCst) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(AppError::Cancelled);
+    }
+
+    let size = std::fs::metadata(&temp)
+        .map(|m| m.len())
+        .map_err(|e| AppError::EncodingFailed(e.to_string()))?;
+
+    let final_out = finalize_output(path, &temp, output_mode, output_name, "-trimmed")?;
+
+    on_progress(duration, duration, 100.0);
+
+    Ok(CompressResult {
+        output_path: final_out.display().to_string(),
+        output_size_bytes: size,
+        skipped: false,
+    })
+}
+
+fn finalize_output(
+    path: &Path,
+    temp: &Path,
+    output_mode: OutputMode,
+    output_name: Option<&str>,
+    suffix: &str,
+) -> Result<std::path::PathBuf, AppError> {
+    match output_mode {
+        OutputMode::CopyBeside => {
+            let dest = beside_original_unique(path, output_name, suffix);
+            std::fs::rename(temp, &dest).map_err(|e| {
+                let _ = std::fs::remove_file(temp);
+                AppError::EncodingFailed(e.to_string())
+            })?;
+            Ok(dest)
+        }
+        OutputMode::Replace => finalize_replace(path, temp, output_name),
+    }
+}
+
 // never overwrite the original until the temp file is good
-fn finalize_replace(original: &Path, temp: &Path) -> Result<std::path::PathBuf, AppError> {
-    let final_path = replace_final_path(original);
+fn finalize_replace(
+    original: &Path,
+    temp: &Path,
+    output_name: Option<&str>,
+) -> Result<std::path::PathBuf, AppError> {
+    let final_path = replace_final_path(original, output_name);
     let backup = backup_path(original);
 
     if backup.exists() {
@@ -203,6 +322,129 @@ fn finalize_replace(original: &Path, temp: &Path) -> Result<std::path::PathBuf, 
 
     let _ = std::fs::remove_file(&backup);
     Ok(final_path)
+}
+
+async fn copy_trim_to<F>(
+    input: &Path,
+    output: &Path,
+    trim: &TrimRange,
+    duration_seconds: f64,
+    cancel: Arc<AtomicBool>,
+    on_progress: &F,
+) -> Result<(), AppError>
+where
+    F: Fn(f64, f64, f64) + Send + Sync,
+{
+    let ffmpeg = binaries::resolve("ffmpeg").map_err(|_| AppError::FfmpegNotFound)?;
+
+    if output.exists() {
+        let _ = std::fs::remove_file(output);
+    }
+
+    // -ss before -i for a fast stream-copy cut (keyframe-aligned).
+    let args = [
+        "-y".to_string(),
+        "-ss".to_string(),
+        format!("{:.3}", trim.start_seconds),
+        "-i".to_string(),
+        input.display().to_string(),
+        "-t".to_string(),
+        format!("{:.3}", trim.duration()),
+        "-map".to_string(),
+        "0".to_string(),
+        "-c".to_string(),
+        "copy".to_string(),
+        "-avoid_negative_ts".to_string(),
+        "make_zero".to_string(),
+        "-nostats".to_string(),
+        "-progress".to_string(),
+        "pipe:1".to_string(),
+        output.display().to_string(),
+    ];
+
+    let mut cmd = Command::new(&ffmpeg);
+    cmd.args(&args);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    binaries::hide_console(&mut cmd);
+
+    let mut child = cmd.spawn().map_err(|err| {
+        if err.kind() == io::ErrorKind::NotFound {
+            AppError::FfmpegNotFound
+        } else {
+            AppError::EncodingFailed(err.to_string())
+        }
+    })?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::EncodingFailed("missing ffmpeg stdout".to_string()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::EncodingFailed("missing ffmpeg stderr".to_string()))?;
+
+    let stderr_task = tauri::async_runtime::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        let mut tail = String::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if tail.len() > 2000 {
+                tail.clear();
+            }
+            tail.push_str(&line);
+            tail.push('\n');
+        }
+        tail
+    });
+
+    let mut lines = BufReader::new(stdout).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = child.kill().await;
+            let _ = std::fs::remove_file(output);
+            return Err(AppError::Cancelled);
+        }
+
+        if let Some(elapsed) = parse_out_time_seconds(&line) {
+            let pct = if duration_seconds > 0.0 {
+                ((elapsed / duration_seconds) * 100.0).clamp(0.0, 99.0)
+            } else {
+                0.0
+            };
+            on_progress(elapsed, duration_seconds, pct);
+        }
+    }
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| AppError::EncodingFailed(e.to_string()))?;
+
+    let stderr_tail = stderr_task.await.unwrap_or_default();
+
+    if cancel.load(Ordering::SeqCst) {
+        let _ = std::fs::remove_file(output);
+        return Err(AppError::Cancelled);
+    }
+
+    if !status.success() {
+        let _ = std::fs::remove_file(output);
+        let msg = stderr_tail.trim();
+        return Err(AppError::EncodingFailed(if msg.is_empty() {
+            format!("trim failed with {status}")
+        } else {
+            msg.chars()
+                .rev()
+                .take(400)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect()
+        }));
+    }
+
+    Ok(())
 }
 
 async fn encode_to<F>(
