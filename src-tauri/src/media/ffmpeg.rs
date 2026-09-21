@@ -1,5 +1,10 @@
+use std::io;
 use std::path::Path;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 use crate::error::AppError;
@@ -9,16 +14,36 @@ use crate::media::bitrate::{plan_bitrates, scale_video_bitrate, BitratePlan};
 use crate::media::ffprobe;
 use crate::models::{CompressResult, CompressionSettings, VideoCodec};
 
+// old one-shot path the ui used before the queue existed
+pub async fn compress(
+    path: &Path,
+    settings: &CompressionSettings,
+) -> Result<CompressResult, AppError> {
+    compress_job(path, settings, Arc::new(AtomicBool::new(false)), |_, _, _| {}).await
+}
 
-pub async fn compress(path: &Path, settings: &CompressionSettings) -> Result<CompressResult, AppError> {
+// queue calls this so we can cancel + drip progress back out
+pub async fn compress_job<F>(
+    path: &Path,
+    settings: &CompressionSettings,
+    cancel: Arc<AtomicBool>,
+    on_progress: F,
+) -> Result<CompressResult, AppError>
+where
+    F: Fn(f64, f64, f64) + Send + Sync,
+{
+    if cancel.load(Ordering::SeqCst) {
+        return Err(AppError::Cancelled);
+    }
+
     if !path.exists() {
         return Err(AppError::InputNotFound(path.display().to_string()));
     }
 
     let media = ffprobe::probe(path).await?;
 
-    // already small enough for discord so dont waste anymore time
     if media.size_bytes <= settings.target_size_bytes {
+        on_progress(media.duration_seconds, media.duration_seconds, 100.0);
         return Ok(CompressResult {
             output_path: media.path,
             output_size_bytes: media.size_bytes,
@@ -31,22 +56,51 @@ pub async fn compress(path: &Path, settings: &CompressionSettings) -> Result<Com
     let final_out = beside_original(path);
 
     if final_out.exists() {
-        return Err(AppError::OutputAlreadyExists(final_out.display().to_string()));
+        return Err(AppError::OutputAlreadyExists(
+            final_out.display().to_string(),
+        ));
     }
 
-    // first try, then one retry a bit lower if ffmpeg overshoots
-    encode_to(path, &temp, settings, &plan).await?;
+    encode_to(
+        path,
+        &temp,
+        settings,
+        &plan,
+        media.duration_seconds,
+        cancel.clone(),
+        &on_progress,
+    )
+    .await?;
+
     let mut size = std::fs::metadata(&temp)
         .map(|m| m.len())
         .map_err(|e| AppError::EncodingFailed(e.to_string()))?;
 
     if size > settings.target_size_bytes {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(AppError::Cancelled);
+        }
         let _ = std::fs::remove_file(&temp);
         let retry = scale_video_bitrate(&plan, 0.85);
-        encode_to(path, &temp, settings, &retry).await?;
+        encode_to(
+            path,
+            &temp,
+            settings,
+            &retry,
+            media.duration_seconds,
+            cancel.clone(),
+            &on_progress,
+        )
+        .await?;
         size = std::fs::metadata(&temp)
             .map(|m| m.len())
             .map_err(|e| AppError::EncodingFailed(e.to_string()))?;
+    }
+
+    if cancel.load(Ordering::SeqCst) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(AppError::Cancelled);
     }
 
     if size > settings.target_size_bytes {
@@ -62,6 +116,8 @@ pub async fn compress(path: &Path, settings: &CompressionSettings) -> Result<Com
         AppError::EncodingFailed(e.to_string())
     })?;
 
+    on_progress(media.duration_seconds, media.duration_seconds, 100.0);
+
     Ok(CompressResult {
         output_path: final_out.display().to_string(),
         output_size_bytes: size,
@@ -69,21 +125,26 @@ pub async fn compress(path: &Path, settings: &CompressionSettings) -> Result<Com
     })
 }
 
-async fn encode_to(
+async fn encode_to<F>(
     input: &Path,
     output: &Path,
     settings: &CompressionSettings,
     plan: &BitratePlan,
-) -> Result<(), AppError> {
+    duration_seconds: f64,
+    cancel: Arc<AtomicBool>,
+    on_progress: &F,
+) -> Result<(), AppError>
+where
+    F: Fn(f64, f64, f64) + Send + Sync,
+{
     let ffmpeg = binaries::resolve("ffmpeg").map_err(|_| AppError::FfmpegNotFound)?;
 
-    // wipe leftover temp from a crashed run
     if output.exists() {
         let _ = std::fs::remove_file(output);
     }
 
-    let video_b = format!("{}", plan.video_bitrate_bps);
-    let audio_b = format!("{}", plan.audio_bitrate_bps);
+    let video_b = plan.video_bitrate_bps.to_string();
+    let audio_b = plan.audio_bitrate_bps.to_string();
     let codec = match settings.video_codec {
         VideoCodec::H264 => "libx264",
     };
@@ -110,12 +171,16 @@ async fn encode_to(
         audio_b,
         "-movflags".to_string(),
         "+faststart".to_string(),
+        "-nostats".to_string(),
+        "-progress".to_string(),
+        "pipe:1".to_string(),
     ];
 
-    // optional downscale / fps caps from settings
     let mut filters: Vec<String> = Vec::new();
     if let (Some(w), Some(h)) = (settings.max_width, settings.max_height) {
-        filters.push(format!("scale='min({w},iw)':'min({h},ih)':force_original_aspect_ratio=decrease"));
+        filters.push(format!(
+            "scale='min({w},iw)':'min({h},ih)':force_original_aspect_ratio=decrease"
+        ));
     } else if let Some(w) = settings.max_width {
         filters.push(format!("scale='min({w},iw)':-2"));
     } else if let Some(h) = settings.max_height {
@@ -133,35 +198,111 @@ async fn encode_to(
 
     let mut cmd = Command::new(&ffmpeg);
     cmd.args(&args);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
     binaries::hide_console(&mut cmd);
 
-    let out = cmd.output().await.map_err(|err| {
-        if err.kind() == std::io::ErrorKind::NotFound {
+    let mut child = cmd.spawn().map_err(|err| {
+        if err.kind() == io::ErrorKind::NotFound {
             AppError::FfmpegNotFound
         } else {
             AppError::EncodingFailed(err.to_string())
         }
     })?;
 
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let msg = stderr.trim();
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::EncodingFailed("missing ffmpeg stdout".to_string()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::EncodingFailed("missing ffmpeg stderr".to_string()))?;
+
+    // drain stderr so the pipe doesnt fill up and freeze ffmpeg
+    let stderr_task = tauri::async_runtime::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        let mut tail = String::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if tail.len() > 2000 {
+                tail.clear();
+            }
+            tail.push_str(&line);
+            tail.push('\n');
+        }
+        tail
+    });
+
+    let mut lines = BufReader::new(stdout).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if cancel.load(Ordering::SeqCst) {
+            let _ = child.kill().await;
+            let _ = std::fs::remove_file(output);
+            return Err(AppError::Cancelled);
+        }
+
+        if let Some(elapsed) = parse_out_time_seconds(&line) {
+            let pct = if duration_seconds > 0.0 {
+                ((elapsed / duration_seconds) * 100.0).clamp(0.0, 99.0)
+            } else {
+                0.0
+            };
+            on_progress(elapsed, duration_seconds, pct);
+        }
+    }
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| AppError::EncodingFailed(e.to_string()))?;
+
+    let stderr_tail = stderr_task.await.unwrap_or_default();
+
+    if cancel.load(Ordering::SeqCst) {
         let _ = std::fs::remove_file(output);
+        return Err(AppError::Cancelled);
+    }
+
+    if !status.success() {
+        let _ = std::fs::remove_file(output);
+        let msg = stderr_tail.trim();
         return Err(AppError::EncodingFailed(if msg.is_empty() {
-            format!("exited with {}", out.status)
+            format!("exited with {status}")
         } else {
-            // ffmpeg dumps a lot, keep the tail so the ui isnt insane
-            let short: String = msg
-                .chars()
+            msg.chars()
                 .rev()
                 .take(400)
                 .collect::<String>()
                 .chars()
                 .rev()
-                .collect();
-            short
+                .collect()
         }));
     }
 
     Ok(())
+}
+
+// ffmpeg prints out_time_ms=... (actually microseconds half the time, go figure)
+fn parse_out_time_seconds(line: &str) -> Option<f64> {
+    if let Some(value) = line.strip_prefix("out_time_ms=") {
+        let us: f64 = value.parse().ok()?;
+        return Some(us / 1_000_000.0);
+    }
+    if let Some(value) = line.strip_prefix("out_time_us=") {
+        let us: f64 = value.parse().ok()?;
+        return Some(us / 1_000_000.0);
+    }
+    if let Some(value) = line.strip_prefix("out_time=") {
+        // HH:MM:SS.micro
+        return parse_hms(value);
+    }
+    None
+}
+
+fn parse_hms(value: &str) -> Option<f64> {
+    let mut parts = value.split(':');
+    let h: f64 = parts.next()?.parse().ok()?;
+    let m: f64 = parts.next()?.parse().ok()?;
+    let s: f64 = parts.next()?.parse().ok()?;
+    Some(h * 3600.0 + m * 60.0 + s)
 }
