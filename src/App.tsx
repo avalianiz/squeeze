@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
@@ -14,10 +15,28 @@ type Media = {
   audio_codec: string | null;
 };
 
-type CompressResult = {
-  output_path: string;
-  output_size_bytes: number;
-  skipped: boolean;
+type JobStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+type CompressionJob = {
+  id: string;
+  input_path: string;
+  output_path: string | null;
+  status: JobStatus;
+  error: string | null;
+  progress_percent: number;
+  output_size_bytes: number | null;
+};
+
+type JobProgress = {
+  job_id: string;
+  elapsed_seconds: number;
+  duration_seconds: number;
+  percentage: number;
 };
 
 const VIDEO_FILTERS = [
@@ -28,8 +47,7 @@ const VIDEO_FILTERS = [
 ];
 
 function formatSize(bytes: number) {
-  const mb = bytes / (1024 * 1024);
-  return `${mb.toFixed(2)} MB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function formatDuration(seconds: number) {
@@ -50,15 +68,45 @@ function fileName(path: string) {
 
 function App() {
   const [media, setMedia] = useState<Media | null>(null);
-  const [result, setResult] = useState<CompressResult | null>(null);
+  const [jobs, setJobs] = useState<CompressionJob[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    let alive = true;
+
+    invoke<CompressionJob[]>("list_jobs")
+      .then((list) => {
+        if (alive) setJobs(list);
+      })
+      .catch(() => {});
+
+    const unlistenUpdated = listen<CompressionJob[]>("job-updated", (event) => {
+      setJobs(event.payload);
+    });
+
+    const unlistenProgress = listen<JobProgress>("job-progress", (event) => {
+      setJobs((prev) =>
+        prev.map((job) =>
+          job.id === event.payload.job_id
+            ? { ...job, progress_percent: event.payload.percentage }
+            : job,
+        ),
+      );
+    });
+
+    return () => {
+      alive = false;
+      unlistenUpdated.then((fn) => fn());
+      unlistenProgress.then((fn) => fn());
+    };
+  }, []);
+
   async function pickAndProbe() {
     const selected = await open({
-      multiple: false,
+      multiple: true,
       directory: false,
-      title: "Pick a video",
+      title: "Pick videos",
       filters: VIDEO_FILTERS,
     });
 
@@ -66,60 +114,57 @@ function App() {
       return;
     }
 
-    const path = Array.isArray(selected) ? selected[0] : selected;
-    if (!path) {
+    const paths = Array.isArray(selected) ? selected : [selected];
+    if (paths.length === 0) {
       return;
     }
 
     setBusy(true);
     setError("");
-    setMedia(null);
-    setResult(null);
     try {
-      const probed = await invoke<Media>("probe_media", { path });
+      // show metadata for the last picked one, queue gets all of them
+      const probed = await invoke<Media>("probe_media", {
+        path: paths[paths.length - 1],
+      });
       setMedia(probed);
+
+      for (const path of paths) {
+        await invoke<CompressionJob>("enqueue_job", { path });
+      }
+      setJobs(await invoke<CompressionJob[]>("list_jobs"));
     } catch (err) {
-      setError(typeof err === "string" ? err : "probe failed");
+      setError(typeof err === "string" ? err : "failed to add jobs");
     } finally {
       setBusy(false);
     }
   }
 
-  async function compress() {
-    if (!media) {
-      return;
-    }
-
-    setBusy(true);
-    setError("");
-    setResult(null);
+  async function cancel(jobId: string) {
     try {
-      const compressed = await invoke<CompressResult>("compress_media", {
-        path: media.path,
-      });
-      setResult(compressed);
+      await invoke("cancel_job", { jobId });
+      setJobs(await invoke<CompressionJob[]>("list_jobs"));
     } catch (err) {
-      setError(typeof err === "string" ? err : "compress failed");
-    } finally {
-      setBusy(false);
+      setError(typeof err === "string" ? err : "cancel failed");
+    }
+  }
+
+  async function retry(jobId: string) {
+    try {
+      await invoke("retry_job", { jobId });
+      setJobs(await invoke<CompressionJob[]>("list_jobs"));
+    } catch (err) {
+      setError(typeof err === "string" ? err : "retry failed");
     }
   }
 
   return (
     <main className="container">
       <h1>Squeeze</h1>
-      <p>Pick a video, then squeeze it under Discord's 20 MB limit.</p>
+      <p>Queue videos and compress them one at a time for Discord.</p>
 
       <div className="row">
         <button type="button" onClick={pickAndProbe} disabled={busy}>
-          {busy && !media ? "Probing..." : "Choose video"}
-        </button>
-        <button
-          type="button"
-          onClick={compress}
-          disabled={busy || !media}
-        >
-          {busy && media ? "Compressing..." : "Compress for Discord"}
+          {busy ? "Adding..." : "Add videos"}
         </button>
       </div>
 
@@ -127,7 +172,7 @@ function App() {
 
       {media && (
         <div className="meta">
-          <p className="meta-name">{fileName(media.path)}</p>
+          <p className="meta-name">Last picked: {fileName(media.path)}</p>
           <dl>
             <dt>Resolution</dt>
             <dd>
@@ -140,31 +185,55 @@ function App() {
             </dd>
             <dt>Size</dt>
             <dd>{formatSize(media.size_bytes)}</dd>
-            <dt>Video</dt>
-            <dd>{media.video_codec ?? "none"}</dd>
-            <dt>Audio</dt>
-            <dd>{media.audio_codec ?? "none"}</dd>
-            <dt>FPS</dt>
-            <dd>
-              {media.frame_rate != null ? media.frame_rate.toFixed(2) : "?"}
-            </dd>
           </dl>
         </div>
       )}
 
-      {result && (
-        <div className="meta">
-          <p className="meta-name">
-            {result.skipped
-              ? "Already under target — no encode needed"
-              : "Compressed"}
-          </p>
-          <dl>
-            <dt>Output</dt>
-            <dd>{fileName(result.output_path)}</dd>
-            <dt>Size</dt>
-            <dd>{formatSize(result.output_size_bytes)}</dd>
-          </dl>
+      {jobs.length > 0 && (
+        <div className="queue">
+          <h2>Queue</h2>
+          <ul>
+            {jobs.map((job) => (
+              <li key={job.id} className="queue-item">
+                <div className="queue-top">
+                  <strong>{fileName(job.input_path)}</strong>
+                  <span className="status">{job.status}</span>
+                </div>
+                {job.status === "running" && (
+                  <div className="bar">
+                    <div
+                      className="bar-fill"
+                      style={{ width: `${job.progress_percent}%` }}
+                    />
+                  </div>
+                )}
+                <div className="queue-meta">
+                  {job.status === "running" && (
+                    <span>{job.progress_percent.toFixed(0)}%</span>
+                  )}
+                  {job.output_size_bytes != null && (
+                    <span>{formatSize(job.output_size_bytes)}</span>
+                  )}
+                  {job.output_path && (
+                    <span>{fileName(job.output_path)}</span>
+                  )}
+                  {job.error && <span className="error">{job.error}</span>}
+                </div>
+                <div className="row queue-actions">
+                  {(job.status === "queued" || job.status === "running") && (
+                    <button type="button" onClick={() => cancel(job.id)}>
+                      Cancel
+                    </button>
+                  )}
+                  {(job.status === "failed" || job.status === "cancelled") && (
+                    <button type="button" onClick={() => retry(job.id)}>
+                      Retry
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </main>
