@@ -16,7 +16,7 @@ use models::{
     CompressionJob, CompressResult, CompressionSettings, DropIngestResult, JobKind, Media,
     OutputMode, TrimRange,
 };
-use tauri::State;
+use tauri::{Manager, State};
 
 fn output_mode(replace: bool) -> OutputMode {
     if replace {
@@ -134,7 +134,7 @@ async fn ingest_paths(
                 });
             }
             let mut added = 0;
-            let preview = videos.last().map(|p| p.display().to_string());
+            // folder batch: queue only — no trim preview
             for video in videos {
                 if manager
                     .enqueue_new(
@@ -153,7 +153,7 @@ async fn ingest_paths(
             folder_roots.push(root);
             return Ok(DropIngestResult {
                 jobs_added: added,
-                preview_path: preview,
+                preview_path: None,
                 folder_roots,
             });
         }
@@ -173,14 +173,15 @@ async fn ingest_paths(
 
     let mut added = 0;
     let mut last_video: Option<String> = None;
+    let mut saw_folder = false;
 
     for raw in paths {
         let path = Path::new(&raw);
         if path.is_dir() {
+            saw_folder = true;
             folder_roots.push(path.display().to_string());
             let videos = discovery::discover_videos(path, recursive)?;
             for video in videos {
-                last_video = Some(video.display().to_string());
                 if manager
                     .enqueue_new(
                         video.display().to_string(),
@@ -236,9 +237,23 @@ async fn ingest_paths(
 
     Ok(DropIngestResult {
         jobs_added: added,
-        preview_path: last_video,
+        // only open trim preview for pure file drops — never for folder batches
+        preview_path: if saw_folder { None } else { last_video },
         folder_roots,
     })
+}
+
+#[tauri::command]
+async fn apply_trim_to_queued(
+    trim: Option<TrimRange>,
+    kind: JobKind,
+    folder_roots: Option<Vec<String>>,
+    manager: State<'_, Arc<JobManager>>,
+) -> Result<usize, AppError> {
+    if kind == JobKind::Trim && trim.is_none() {
+        return Err(AppError::InvalidTrimRange);
+    }
+    Ok(manager.apply_to_queued(trim, kind, folder_roots).await)
 }
 
 #[tauri::command]
@@ -285,6 +300,13 @@ pub fn run() {
         .manage(manager.clone())
         .setup(move |app| {
             worker::spawn_worker(app.handle().clone(), manager);
+
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.center();
+                let icon = tauri::include_image!("icons/icon.png");
+                let _ = window.set_icon(icon);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -293,6 +315,7 @@ pub fn run() {
             enqueue_job,
             enqueue_folder,
             ingest_paths,
+            apply_trim_to_queued,
             list_jobs,
             cancel_job,
             retry_job,
