@@ -63,7 +63,8 @@ impl JobManager {
         job
     }
 
-    /// queue only if this input isnt already waiting/running
+    /// queue only if this input isnt already in the list (any status).
+    /// failed/cancelled use retry — dont invent duplicates from folder re-scan.
     pub async fn enqueue_new(
         &self,
         input_path: String,
@@ -74,10 +75,10 @@ impl JobManager {
     ) -> Option<CompressionJob> {
         {
             let inner = self.inner.lock().await;
-            let already = inner.jobs.iter().any(|j| {
-                j.input_path == input_path
-                    && matches!(j.status, JobStatus::Queued | JobStatus::Running)
-            });
+            let already = inner
+                .jobs
+                .iter()
+                .any(|j| crate::filesystem::discovery::same_path(&j.input_path, &input_path));
             if already {
                 return None;
             }
@@ -86,6 +87,34 @@ impl JobManager {
             self.enqueue(input_path, output_mode, trim, kind, output_name)
                 .await,
         )
+    }
+
+    /// stamp the same trim/kind onto every still-waiting job (optionally under folder roots).
+    pub async fn apply_to_queued(
+        &self,
+        trim: Option<TrimRange>,
+        kind: JobKind,
+        folder_roots: Option<Vec<String>>,
+    ) -> usize {
+        let mut inner = self.inner.lock().await;
+        let mut changed = 0;
+        for job in inner.jobs.iter_mut() {
+            if job.status != JobStatus::Queued {
+                continue;
+            }
+            if let Some(roots) = &folder_roots {
+                let under = roots
+                    .iter()
+                    .any(|root| crate::filesystem::discovery::path_under_root(&job.input_path, root));
+                if !under {
+                    continue;
+                }
+            }
+            job.trim = trim.clone();
+            job.kind = kind;
+            changed += 1;
+        }
+        changed
     }
 
     pub async fn list(&self) -> Vec<CompressionJob> {

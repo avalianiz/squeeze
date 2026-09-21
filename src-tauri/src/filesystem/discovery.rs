@@ -6,6 +6,29 @@ pub const VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "mov", "webm", "avi", "m4v", "wmv", "flv",
 ];
 
+/// Compare paths in a Windows-tolerant way (slash + case).
+pub fn path_key(path: &str) -> String {
+    let normalized = path.replace('/', "\\");
+    #[cfg(windows)]
+    {
+        normalized.to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        normalized
+    }
+}
+
+pub fn same_path(a: &str, b: &str) -> bool {
+    path_key(a) == path_key(b)
+}
+
+pub fn path_under_root(path: &str, root: &str) -> bool {
+    let path = path_key(path);
+    let root = path_key(root).trim_end_matches('\\').to_string();
+    path == root || path.starts_with(&(root + "\\"))
+}
+
 // find videos in a folder. skips our own squeezed/temp/backup junk.
 pub fn discover_videos(root: &Path, recursive: bool) -> Result<Vec<PathBuf>, AppError> {
     if !root.is_dir() {
@@ -81,5 +104,16 @@ mod tests {
         assert!(!is_source_video(Path::new("clip.tmp-compressed.mp4")));
         assert!(is_source_video(Path::new("clip.mp4")));
         assert!(is_source_video(Path::new("CLIP.MKV")));
+    }
+
+    #[test]
+    fn path_keys_match_slash_and_case() {
+        assert!(same_path(r"C:\Clips\Peak\a.mp4", r"c:/clips/peak/a.mp4"));
+    }
+
+    #[test]
+    fn under_root_does_not_prefix_false_friends() {
+        assert!(path_under_root(r"C:\peak\1\a.mp4", r"C:\peak"));
+        assert!(!path_under_root(r"C:\peak_other\a.mp4", r"C:\peak"));
     }
 }
