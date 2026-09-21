@@ -13,8 +13,12 @@
     "windows": [
       {
         "title": "Squeeze",
-        "width": 880,
-        "height": 780
+        "width": 680,
+        "height": 520,
+        "minWidth": 520,
+        "minHeight": 420,
+        "decorations": false,
+        "resizable": true
       }
     ],
     "security": {
