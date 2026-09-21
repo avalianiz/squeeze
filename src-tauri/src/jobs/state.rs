@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify};
 
-use crate::models::{CompressionJob, CompressionSettings, JobStatus, OutputMode, TrimRange};
+use crate::models::{CompressionJob, CompressionSettings, JobKind, JobStatus, OutputMode, TrimRange};
 
 // all the job list + cancel flags live here. worker peeks at this.
 pub struct JobManager {
@@ -33,6 +33,8 @@ impl JobManager {
         input_path: String,
         output_mode: OutputMode,
         trim: Option<TrimRange>,
+        kind: JobKind,
+        output_name: Option<String>,
     ) -> CompressionJob {
         let id = uuid::Uuid::new_v4().to_string();
         let job = CompressionJob {
@@ -46,6 +48,8 @@ impl JobManager {
             settings: CompressionSettings::discord(),
             output_mode,
             trim,
+            kind,
+            output_name,
         };
 
         let mut inner = self.inner.lock().await;
@@ -57,6 +61,31 @@ impl JobManager {
 
         self.wake.notify_one();
         job
+    }
+
+    /// queue only if this input isnt already waiting/running
+    pub async fn enqueue_new(
+        &self,
+        input_path: String,
+        output_mode: OutputMode,
+        trim: Option<TrimRange>,
+        kind: JobKind,
+        output_name: Option<String>,
+    ) -> Option<CompressionJob> {
+        {
+            let inner = self.inner.lock().await;
+            let already = inner.jobs.iter().any(|j| {
+                j.input_path == input_path
+                    && matches!(j.status, JobStatus::Queued | JobStatus::Running)
+            });
+            if already {
+                return None;
+            }
+        }
+        Some(
+            self.enqueue(input_path, output_mode, trim, kind, output_name)
+                .await,
+        )
     }
 
     pub async fn list(&self) -> Vec<CompressionJob> {
@@ -89,15 +118,21 @@ impl JobManager {
 
     pub async fn retry(&self, job_id: &str) -> Option<CompressionJob> {
         let inner = self.inner.lock().await;
-        let (input, mode, trim) = {
+        let (input, mode, trim, kind, output_name) = {
             let job = inner.jobs.iter().find(|j| j.id == job_id)?;
             if !matches!(job.status, JobStatus::Failed | JobStatus::Cancelled) {
                 return None;
             }
-            (job.input_path.clone(), job.output_mode, job.trim.clone())
+            (
+                job.input_path.clone(),
+                job.output_mode,
+                job.trim.clone(),
+                job.kind,
+                job.output_name.clone(),
+            )
         };
         drop(inner);
-        Some(self.enqueue(input, mode, trim).await)
+        Some(self.enqueue(input, mode, trim, kind, output_name).await)
     }
 
     pub async fn cancel_flag(&self, job_id: &str) -> Option<Arc<AtomicBool>> {
