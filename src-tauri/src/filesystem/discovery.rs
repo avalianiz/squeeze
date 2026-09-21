@@ -45,6 +45,10 @@ fn scan_dir(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) -> Result<(), A
     Ok(())
 }
 
+pub fn is_supported_video(path: &Path) -> bool {
+    is_source_video(path)
+}
+
 fn is_source_video(path: &Path) -> bool {
     let name = match path.file_name().and_then(|n| n.to_str()) {
         Some(n) => n.to_ascii_lowercase(),
