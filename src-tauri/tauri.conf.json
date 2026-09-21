@@ -13,12 +13,16 @@
     "windows": [
       {
         "title": "Squeeze",
-        "width": 800,
-        "height": 600
+        "width": 880,
+        "height": 780
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
     }
   },
   "bundle": {
