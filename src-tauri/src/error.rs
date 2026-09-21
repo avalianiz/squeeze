@@ -11,6 +11,7 @@ pub enum AppError {
     InvalidVideo(String),
     TargetBitrateTooLow,
     Cancelled,
+    InvalidTrimRange,
 }
 
 impl std::fmt::Display for AppError {
@@ -32,6 +33,7 @@ impl std::fmt::Display for AppError {
                 "video is too long/short to fit the target size with usable quality"
             ),
             AppError::Cancelled => write!(f, "cancelled"),
+            AppError::InvalidTrimRange => write!(f, "trim range doesnt make sense"),
         }
     }
 }
