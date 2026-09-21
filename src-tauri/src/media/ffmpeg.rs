@@ -16,24 +16,6 @@ use crate::media::bitrate::{plan_bitrates, scale_video_bitrate, BitratePlan};
 use crate::media::ffprobe;
 use crate::models::{CompressResult, CompressionSettings, JobKind, OutputMode, TrimRange, VideoCodec};
 
-// old one-shot path the ui used before the queue existed
-pub async fn compress(
-    path: &Path,
-    settings: &CompressionSettings,
-) -> Result<CompressResult, AppError> {
-    run_job(
-        path,
-        settings,
-        OutputMode::CopyBeside,
-        None,
-        None,
-        JobKind::Squeeze,
-        Arc::new(AtomicBool::new(false)),
-        |_, _, _| {},
-    )
-    .await
-}
-
 // queue calls this so we can cancel + drip progress back out
 pub async fn run_job<F>(
     path: &Path,
