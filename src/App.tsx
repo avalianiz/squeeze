@@ -148,6 +148,7 @@ function App() {
   const [outputName, setOutputName] = useState("");
   const [maximized, setMaximized] = useState(false);
   const [folderRoots, setFolderRoots] = useState<string[]>([]);
+  const [previewExpanded, setPreviewExpanded] = useState(false);
   const scrubRef = useRef<HTMLDivElement | null>(null);
 
   const replaceRef = useRef(replaceOriginals);
@@ -246,6 +247,7 @@ function App() {
     setCurrentTime(0);
     setPlaying(false);
     setOutputName(fileStem(probed.path));
+    setPreviewExpanded(false);
   }
 
   async function previewPath(path: string) {
@@ -275,6 +277,11 @@ function App() {
           }
           return [...next];
         });
+        // folder batch: queue only — never open the trim player
+        if (result.jobs_added > 0) {
+          setJobs(await invoke<CompressionJob[]>("list_jobs"));
+        }
+        return;
       }
 
       if (result.preview_path) {
@@ -307,9 +314,27 @@ function App() {
       });
       if (result.jobs_added > 0) {
         setJobs(await invoke<CompressionJob[]>("list_jobs"));
+      } else {
+        const list = await invoke<CompressionJob[]>("list_jobs");
+        setJobs(list);
+        if (list.length === 0) {
+          setError("no videos found in those subfolders either");
+        }
       }
     } catch (err) {
       setError(typeof err === "string" ? err : "couldnt add subfolder videos");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openJobInTrim(path: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await previewPath(path);
+    } catch (err) {
+      setError(typeof err === "string" ? err : "couldnt open that video");
     } finally {
       setBusy(false);
     }
@@ -333,6 +358,11 @@ function App() {
       if (isTypingTarget(e.target) || e.metaKey || e.ctrlKey || e.altKey) {
         return;
       }
+      if (e.code === "Escape" && previewExpanded) {
+        e.preventDefault();
+        setPreviewExpanded(false);
+        return;
+      }
       if (e.code !== "Enter" || busyRef.current || mediaRef.current) {
         return;
       }
@@ -342,7 +372,7 @@ function App() {
 
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, []);
+  }, [previewExpanded]);
 
   async function openVideoPicker() {
     const selected = await open({
@@ -583,6 +613,9 @@ function App() {
   const hasActive = jobs.some(
     (j) => j.status === "queued" || j.status === "running",
   );
+  const isHome = !media && jobs.length === 0 && folderRoots.length === 0;
+  const folderPending =
+    folderRoots.length > 0 && !media && jobs.length === 0;
 
   async function windowAction(action: "minimize" | "toggleMaximize" | "close") {
     const win = getCurrentWindow();
@@ -603,16 +636,26 @@ function App() {
   return (
     <div
       className={`app-shell${dragging ? " dragging" : ""}${
-        !media && jobs.length === 0 ? " is-home" : " is-work"
+        isHome ? " is-home" : " is-work"
       }`}
     >
       <div className="ambiance" aria-hidden="true">
+        <span className="ambiance-wash" />
         <span className="blob blob-a" />
         <span className="blob blob-b" />
         <span className="blob blob-c" />
         <span className="ambiance-veil" />
       </div>
-      <div className="drag-strip" data-tauri-drag-region />
+      <div className="titlebar" data-tauri-drag-region>
+        <img
+          className="titlebar-mark"
+          src="/files/icon-fullbleed.png"
+          width={20}
+          height={20}
+          alt=""
+          draggable={false}
+        />
+      </div>
       <div className="window-controls">
         <button
           type="button"
@@ -620,7 +663,7 @@ function App() {
           aria-label="Minimize"
           onClick={() => void windowAction("minimize")}
         >
-          <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+          <svg viewBox="0 0 12 12" width={12} height={12} aria-hidden="true">
             <path d="M2 6h8" stroke="currentColor" strokeWidth="1.2" />
           </svg>
         </button>
@@ -631,7 +674,7 @@ function App() {
           onClick={() => void windowAction("toggleMaximize")}
         >
           {maximized ? (
-            <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+            <svg viewBox="0 0 12 12" width={12} height={12} aria-hidden="true">
               <path
                 d="M3.5 4.5h5v5h-5zM4.5 3.5h5v5"
                 fill="none"
@@ -640,7 +683,7 @@ function App() {
               />
             </svg>
           ) : (
-            <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+            <svg viewBox="0 0 12 12" width={12} height={12} aria-hidden="true">
               <rect
                 x="2.5"
                 y="2.5"
@@ -659,7 +702,7 @@ function App() {
           aria-label="Close"
           onClick={() => void windowAction("close")}
         >
-          <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+          <svg viewBox="0 0 12 12" width={12} height={12} aria-hidden="true">
             <path
               d="M3 3l6 6M9 3L3 9"
               stroke="currentColor"
@@ -669,10 +712,8 @@ function App() {
         </button>
       </div>
 
-      <main
-        className={`container${!media && jobs.length === 0 ? " is-home" : ""}`}
-      >
-        {!media && jobs.length === 0 ? (
+      <main className={`container${isHome ? " is-home" : ""}`}>
+        {isHome ? (
           <section className="home" aria-label="Start">
             <div className="home-brand">
               <img
@@ -706,7 +747,7 @@ function App() {
               onClick={() => void pickVideos()}
               disabled={busy}
             >
-              <span className="empty-title">Drop videos to squeeze</span>
+              <span className="empty-title">Drop videos</span>
               <span className="empty-copy">or browse files</span>
               <span className="empty-keys">
                 <kbd>Enter</kbd>
@@ -719,6 +760,18 @@ function App() {
               onClick={() => void pickFolder()}
               disabled={busy}
             >
+              <svg
+                className="home-folder-icon"
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                aria-hidden="true"
+              >
+                <path
+                  fill="currentColor"
+                  d="M3.5 6.75A2.25 2.25 0 0 1 5.75 4.5h3.1c.4 0 .78.16 1.06.44l1.15 1.15c.28.28.66.44 1.06.44h6.13A2.25 2.25 0 0 1 20.5 8.78v8.47a2.25 2.25 0 0 1-2.25 2.25H5.75A2.25 2.25 0 0 1 3.5 17.25V6.75Z"
+                />
+              </svg>
               Add a folder instead
             </button>
           </section>
@@ -772,6 +825,15 @@ function App() {
                 </button>
               </div>
             )}
+
+            {folderPending && (
+              <div className="folder-hint" role="status">
+                <p>
+                  No videos in that folder yet. Turn on{" "}
+                  <strong>Include subfolders</strong> to look deeper.
+                </p>
+              </div>
+            )}
           </>
         )}
 
@@ -782,28 +844,48 @@ function App() {
       )}
 
       {media && (
-        <section className="preview" aria-label="Preview and trim">
-          <label className="rename-field">
-            <span>Output name</span>
-            <input
-              type="text"
-              value={outputName}
-              onChange={(e) => setOutputName(e.target.value)}
-              spellCheck={false}
-              autoComplete="off"
-            />
-          </label>
+        <section
+          className={`preview${previewExpanded ? " is-expanded" : ""}`}
+          aria-label="Preview and trim"
+        >
+          <div className="preview-top">
+            <label className="rename-field">
+              <span>Output name</span>
+              <input
+                type="text"
+                value={outputName}
+                onChange={(e) => setOutputName(e.target.value)}
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </label>
+            <button
+              type="button"
+              className="ghost preview-expand-btn"
+              onClick={() => setPreviewExpanded((v) => !v)}
+              aria-pressed={previewExpanded}
+              title={
+                previewExpanded
+                  ? "Exit large preview (Esc)"
+                  : "Open large preview"
+              }
+            >
+              {previewExpanded ? "Exit large view" : "Large view"}
+            </button>
+          </div>
 
-          <video
-            ref={videoRef}
-            key={media.path}
-            src={previewSrc}
-            className="preview-video"
-            onTimeUpdate={onTimeUpdate}
-            onPause={() => setPlaying(false)}
-            onPlay={() => setPlaying(true)}
-            onClick={togglePlay}
-          />
+          <div className="preview-stage">
+            <video
+              ref={videoRef}
+              key={media.path}
+              src={previewSrc}
+              className="preview-video"
+              onTimeUpdate={onTimeUpdate}
+              onPause={() => setPlaying(false)}
+              onPlay={() => setPlaying(true)}
+              onClick={togglePlay}
+            />
+          </div>
 
           <div className="trim-controls">
             <div className="transport">
@@ -921,6 +1003,18 @@ function App() {
               >
                 Trim only
               </button>
+              <button
+                type="button"
+                className="ghost trim-close"
+                onClick={() => {
+                  setPreviewExpanded(false);
+                  setMedia(null);
+                  setPlaying(false);
+                }}
+                disabled={busy}
+              >
+                Close preview
+              </button>
             </div>
           </div>
         </section>
@@ -965,7 +1059,15 @@ function App() {
                 <li key={job.id} className={`queue-item status-${job.status}`}>
                   <div className="queue-top">
                     <div>
-                      <strong>{fileName(job.input_path)}</strong>
+                      <button
+                        type="button"
+                        className="queue-open"
+                        onClick={() => void openJobInTrim(job.input_path)}
+                        disabled={busy}
+                        title="Open in trim preview"
+                      >
+                        {fileName(job.input_path)}
+                      </button>
                       {flags && <div className="job-flags">{flags}</div>}
                     </div>
                     <span className="status">{statusLabel(job.status)}</span>
