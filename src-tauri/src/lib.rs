@@ -13,8 +13,7 @@ use filesystem::output::sanitize_stem;
 use jobs::state::JobManager;
 use jobs::worker;
 use models::{
-    CompressionJob, CompressResult, CompressionSettings, DropIngestResult, JobKind, Media,
-    OutputMode, TrimRange,
+    CompressionJob, DropIngestResult, JobKind, Media, OutputMode, TrimRange,
 };
 use tauri::{Manager, State};
 
@@ -33,11 +32,6 @@ fn clean_output_name(name: Option<String>) -> Option<String> {
 #[tauri::command]
 async fn probe_media(path: String) -> Result<Media, AppError> {
     media::ffprobe::probe(Path::new(&path)).await
-}
-
-#[tauri::command]
-async fn compress_media(path: String) -> Result<CompressResult, AppError> {
-    media::ffmpeg::compress(Path::new(&path), &CompressionSettings::discord()).await
 }
 
 #[tauri::command]
@@ -64,39 +58,6 @@ async fn enqueue_job(
             clean_output_name(output_name),
         )
         .await)
-}
-
-#[tauri::command]
-async fn enqueue_folder(
-    path: String,
-    recursive: bool,
-    replace: bool,
-    manager: State<'_, Arc<JobManager>>,
-) -> Result<Vec<CompressionJob>, AppError> {
-    let root = Path::new(&path);
-    let videos = discovery::discover_videos(root, recursive)?;
-    if videos.is_empty() {
-        return Err(AppError::InvalidVideo(
-            "no supported videos in that folder".to_string(),
-        ));
-    }
-
-    let mode = output_mode(replace);
-    let mut jobs = Vec::with_capacity(videos.len());
-    for video in videos {
-        jobs.push(
-            manager
-                .enqueue(
-                    video.display().to_string(),
-                    mode,
-                    None,
-                    JobKind::Squeeze,
-                    None,
-                )
-                .await,
-        );
-    }
-    Ok(jobs)
 }
 
 // drag-drop / multi path entry. one lone file → preview, otherwise queue them.
@@ -244,19 +205,6 @@ async fn ingest_paths(
 }
 
 #[tauri::command]
-async fn apply_trim_to_queued(
-    trim: Option<TrimRange>,
-    kind: JobKind,
-    folder_roots: Option<Vec<String>>,
-    manager: State<'_, Arc<JobManager>>,
-) -> Result<usize, AppError> {
-    if kind == JobKind::Trim && trim.is_none() {
-        return Err(AppError::InvalidTrimRange);
-    }
-    Ok(manager.apply_to_queued(trim, kind, folder_roots).await)
-}
-
-#[tauri::command]
 async fn list_jobs(manager: State<'_, Arc<JobManager>>) -> Result<Vec<CompressionJob>, AppError> {
     Ok(manager.list().await)
 }
@@ -311,11 +259,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             probe_media,
-            compress_media,
             enqueue_job,
-            enqueue_folder,
             ingest_paths,
-            apply_trim_to_queued,
             list_jobs,
             cancel_job,
             retry_job,

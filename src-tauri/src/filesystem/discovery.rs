@@ -23,12 +23,6 @@ pub fn same_path(a: &str, b: &str) -> bool {
     path_key(a) == path_key(b)
 }
 
-pub fn path_under_root(path: &str, root: &str) -> bool {
-    let path = path_key(path);
-    let root = path_key(root).trim_end_matches('\\').to_string();
-    path == root || path.starts_with(&(root + "\\"))
-}
-
 // find videos in a folder. skips our own squeezed/temp/backup junk.
 pub fn discover_videos(root: &Path, recursive: bool) -> Result<Vec<PathBuf>, AppError> {
     if !root.is_dir() {
@@ -109,11 +103,5 @@ mod tests {
     #[test]
     fn path_keys_match_slash_and_case() {
         assert!(same_path(r"C:\Clips\Peak\a.mp4", r"c:/clips/peak/a.mp4"));
-    }
-
-    #[test]
-    fn under_root_does_not_prefix_false_friends() {
-        assert!(path_under_root(r"C:\peak\1\a.mp4", r"C:\peak"));
-        assert!(!path_under_root(r"C:\peak_other\a.mp4", r"C:\peak"));
     }
 }
