@@ -156,6 +156,48 @@ impl JobManager {
         }
     }
 
+    pub async fn clear_finished(&self) -> usize {
+        let mut inner = self.inner.lock().await;
+        let before = inner.jobs.len();
+        inner.jobs.retain(|job| {
+            matches!(job.status, JobStatus::Queued | JobStatus::Running)
+        });
+        // drop cancel flags for removed jobs
+        let keep: std::collections::HashSet<_> =
+            inner.jobs.iter().map(|j| j.id.clone()).collect();
+        inner.cancels.retain(|id, _| keep.contains(id));
+        before - inner.jobs.len()
+    }
+
+    pub async fn cancel_all_pending(&self) -> usize {
+        let mut inner = self.inner.lock().await;
+        let mut count = 0;
+        let mut running_ids = Vec::new();
+
+        for job in inner.jobs.iter_mut() {
+            match job.status {
+                JobStatus::Queued => {
+                    job.status = JobStatus::Cancelled;
+                    job.error = Some("cancelled".to_string());
+                    count += 1;
+                }
+                JobStatus::Running => {
+                    running_ids.push(job.id.clone());
+                    count += 1;
+                }
+                _ => {}
+            }
+        }
+
+        for id in running_ids {
+            if let Some(flag) = inner.cancels.get(&id) {
+                flag.store(true, Ordering::SeqCst);
+            }
+        }
+
+        count
+    }
+
     // grabs the next queued job, or waits until something shows up
     pub async fn wait_next_queued(&self) -> CompressionJob {
         loop {
