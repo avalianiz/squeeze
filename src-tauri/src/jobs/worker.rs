@@ -45,6 +45,14 @@ async fn run_one(app: &AppHandle, manager: Arc<JobManager>, job_id: String) {
     manager.set_running(&job_id).await;
     let _ = app.emit("job-updated", manager.list().await);
 
+    if let Err(err) = crate::media::binaries::ensure(app).await {
+        manager
+            .set_failed(&job_id, err.to_string())
+            .await;
+        let _ = app.emit("job-updated", manager.list().await);
+        return;
+    }
+
     let app_progress = app.clone();
     let manager_progress = manager.clone();
     let progress_id = job_id.clone();
