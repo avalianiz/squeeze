@@ -27,3 +27,7 @@ src-tauri/target
 
 # Local-only
 plan.md
+
+# Bundled ffmpeg/ffprobe (download locally)
+src-tauri/binaries/ffmpeg.exe
+src-tauri/binaries/ffprobe.exe
