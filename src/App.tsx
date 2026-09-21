@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, startTransition, type PointerEvent as ReactPointerEvent } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -183,22 +183,42 @@ function App() {
       .catch(() => {});
 
     const unlistenUpdated = listen<CompressionJob[]>("job-updated", (event) => {
-      setJobs(event.payload);
+      startTransition(() => {
+        setJobs(event.payload);
+      });
     }).catch(() => undefined);
 
+    let progressFrame = 0;
+    let pendingProgress: JobProgress | null = null;
+
     const unlistenProgress = listen<JobProgress>("job-progress", (event) => {
-      setLiveProgress(event.payload);
-      setJobs((prev) =>
-        prev.map((job) =>
-          job.id === event.payload.job_id
-            ? { ...job, progress_percent: event.payload.percentage }
-            : job,
-        ),
-      );
+      pendingProgress = event.payload;
+      if (progressFrame !== 0) {
+        return;
+      }
+      progressFrame = requestAnimationFrame(() => {
+        progressFrame = 0;
+        const payload = pendingProgress;
+        pendingProgress = null;
+        if (!payload) {
+          return;
+        }
+        setLiveProgress(payload);
+        setJobs((prev) =>
+          prev.map((job) =>
+            job.id === payload.job_id
+              ? { ...job, progress_percent: payload.percentage }
+              : job,
+          ),
+        );
+      });
     }).catch(() => undefined);
 
     return () => {
       alive = false;
+      if (progressFrame !== 0) {
+        cancelAnimationFrame(progressFrame);
+      }
       void unlistenUpdated.then((fn) => fn?.());
       void unlistenProgress.then((fn) => fn?.());
     };
@@ -639,21 +659,16 @@ function App() {
         isHome ? " is-home" : " is-work"
       }`}
     >
-      <div className="ambiance" aria-hidden="true">
-        <span className="ambiance-wash" />
-        <span className="blob blob-a" />
-        <span className="blob blob-b" />
-        <span className="blob blob-c" />
-        <span className="ambiance-veil" />
-      </div>
+      {isHome && <div className="ambiance" aria-hidden="true" />}
       <div className="titlebar" data-tauri-drag-region>
         <img
           className="titlebar-mark"
-          src="/files/icon-fullbleed.png"
+          src="/files/icon-fullbleed.svg"
           width={20}
           height={20}
           alt=""
           draggable={false}
+          decoding="async"
         />
       </div>
       <div className="window-controls">
@@ -664,7 +679,12 @@ function App() {
           onClick={() => void windowAction("minimize")}
         >
           <svg viewBox="0 0 12 12" width={12} height={12} aria-hidden="true">
-            <path d="M2 6h8" stroke="currentColor" strokeWidth="1.2" />
+            <path
+              d="M2.5 6h7"
+              stroke="currentColor"
+              strokeWidth="1.25"
+              strokeLinecap="round"
+            />
           </svg>
         </button>
         <button
@@ -679,19 +699,21 @@ function App() {
                 d="M3.5 4.5h5v5h-5zM4.5 3.5h5v5"
                 fill="none"
                 stroke="currentColor"
-                strokeWidth="1.1"
+                strokeWidth="1.25"
+                strokeLinejoin="round"
               />
             </svg>
           ) : (
             <svg viewBox="0 0 12 12" width={12} height={12} aria-hidden="true">
               <rect
-                x="2.5"
-                y="2.5"
-                width="7"
-                height="7"
+                x="2.75"
+                y="2.75"
+                width="6.5"
+                height="6.5"
                 fill="none"
                 stroke="currentColor"
-                strokeWidth="1.1"
+                strokeWidth="1.25"
+                rx="0.4"
               />
             </svg>
           )}
@@ -706,7 +728,8 @@ function App() {
             <path
               d="M3 3l6 6M9 3L3 9"
               stroke="currentColor"
-              strokeWidth="1.2"
+              strokeWidth="1.25"
+              strokeLinecap="round"
             />
           </svg>
         </button>
@@ -723,6 +746,7 @@ function App() {
                 height={40}
                 alt=""
                 draggable={false}
+                decoding="async"
               />
               <h1 className="home-wordmark">Squeeze</h1>
             </div>
