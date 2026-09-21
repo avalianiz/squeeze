@@ -89,34 +89,6 @@ impl JobManager {
         )
     }
 
-    /// stamp the same trim/kind onto every still-waiting job (optionally under folder roots).
-    pub async fn apply_to_queued(
-        &self,
-        trim: Option<TrimRange>,
-        kind: JobKind,
-        folder_roots: Option<Vec<String>>,
-    ) -> usize {
-        let mut inner = self.inner.lock().await;
-        let mut changed = 0;
-        for job in inner.jobs.iter_mut() {
-            if job.status != JobStatus::Queued {
-                continue;
-            }
-            if let Some(roots) = &folder_roots {
-                let under = roots
-                    .iter()
-                    .any(|root| crate::filesystem::discovery::path_under_root(&job.input_path, root));
-                if !under {
-                    continue;
-                }
-            }
-            job.trim = trim.clone();
-            job.kind = kind;
-            changed += 1;
-        }
-        changed
-    }
-
     pub async fn list(&self) -> Vec<CompressionJob> {
         self.inner.lock().await.jobs.clone()
     }
