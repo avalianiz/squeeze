@@ -49,11 +49,13 @@ async fn run_one(app: &AppHandle, manager: Arc<JobManager>, job_id: String) {
     let manager_progress = manager.clone();
     let progress_id = job_id.clone();
 
-    let result = ffmpeg::compress_job(
+    let result = ffmpeg::run_job(
         std::path::Path::new(&job.input_path),
         &job.settings,
         job.output_mode,
         job.trim.clone(),
+        job.output_name.clone(),
+        job.kind,
         cancel,
         move |elapsed, duration, percentage| {
             let manager = manager_progress.clone();
