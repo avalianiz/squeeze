@@ -12,6 +12,7 @@ pub enum AppError {
     TargetBitrateTooLow,
     Cancelled,
     InvalidTrimRange,
+    ToolsDownloadFailed(String),
 }
 
 impl std::fmt::Display for AppError {
@@ -34,6 +35,9 @@ impl std::fmt::Display for AppError {
             ),
             AppError::Cancelled => write!(f, "cancelled"),
             AppError::InvalidTrimRange => write!(f, "trim range doesnt make sense"),
+            AppError::ToolsDownloadFailed(message) => {
+                write!(f, "couldnt get ffmpeg: {message}")
+            }
         }
     }
 }

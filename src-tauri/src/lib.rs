@@ -30,7 +30,8 @@ fn clean_output_name(name: Option<String>) -> Option<String> {
 }
 
 #[tauri::command]
-async fn probe_media(path: String) -> Result<Media, AppError> {
+async fn probe_media(path: String, app: tauri::AppHandle) -> Result<Media, AppError> {
+    media::binaries::ensure(&app).await?;
     media::ffprobe::probe(Path::new(&path)).await
 }
 
@@ -67,7 +68,9 @@ async fn ingest_paths(
     recursive: bool,
     replace: bool,
     manager: State<'_, Arc<JobManager>>,
+    app: tauri::AppHandle,
 ) -> Result<DropIngestResult, AppError> {
+    media::binaries::ensure(&app).await?;
     if paths.is_empty() {
         return Err(AppError::InvalidVideo("nothing was dropped".to_string()));
     }
@@ -238,15 +241,58 @@ async fn cancel_all_jobs(manager: State<'_, Arc<JobManager>>) -> Result<usize, A
     Ok(manager.cancel_all_pending().await)
 }
 
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "mov", "webm", "avi", "m4v", "wmv", "flv"];
+
+/// Native picker without parenting to the undecorated window (that often hides the dialog on Windows).
+#[tauri::command]
+async fn pick_videos() -> Result<Option<Vec<String>>, AppError> {
+    let picked = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Pick videos")
+            .add_filter("Video", VIDEO_EXTENSIONS)
+            .pick_files()
+            .map(|paths| {
+                paths
+                    .into_iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+            })
+    })
+    .await
+    .map_err(|err| AppError::EncodingFailed(format!("file picker failed: {err}")))?;
+
+    Ok(picked)
+}
+
+#[tauri::command]
+async fn pick_folder() -> Result<Option<String>, AppError> {
+    let picked = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Pick a folder of videos")
+            .pick_folder()
+            .map(|path| path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|err| AppError::EncodingFailed(format!("folder picker failed: {err}")))?;
+
+    Ok(picked)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let manager = Arc::new(JobManager::new());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
         .manage(manager.clone())
         .setup(move |app| {
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                media::binaries::set_resource_dir(resource_dir);
+            }
+            if let Ok(data_dir) = app.path().app_local_data_dir() {
+                media::binaries::set_tools_dir(data_dir.join("bin"));
+            }
+
             worker::spawn_worker(app.handle().clone(), manager);
 
             if let Some(window) = app.get_webview_window("main") {
@@ -265,7 +311,9 @@ pub fn run() {
             cancel_job,
             retry_job,
             clear_finished_jobs,
-            cancel_all_jobs
+            cancel_all_jobs,
+            pick_videos,
+            pick_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

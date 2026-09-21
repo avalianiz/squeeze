@@ -3,7 +3,6 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import "./App.css";
 
@@ -59,13 +58,6 @@ type DropIngestResult = {
   preview_path: string | null;
   folder_roots: string[];
 };
-
-const VIDEO_FILTERS = [
-  {
-    name: "Video",
-    extensions: ["mp4", "mkv", "mov", "webm", "avi", "m4v", "wmv", "flv"],
-  },
-];
 
 function formatSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
@@ -124,6 +116,36 @@ function IconPause() {
   );
 }
 
+function IconBack() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M15 5L8 12l7 7"
+      />
+    </svg>
+  );
+}
+
+function IconExpand() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M8 4H4v4M16 4h4v4M8 20H4v-4M16 20h4v-4"
+      />
+    </svg>
+  );
+}
+
 type DragKind = "start" | "end" | "seek" | null;
 
 function clamp(n: number, min: number, max: number) {
@@ -149,6 +171,7 @@ function App() {
   const [maximized, setMaximized] = useState(false);
   const [folderRoots, setFolderRoots] = useState<string[]>([]);
   const [previewExpanded, setPreviewExpanded] = useState(false);
+  const [toolsStatus, setToolsStatus] = useState("");
   const scrubRef = useRef<HTMLDivElement | null>(null);
 
   const replaceRef = useRef(replaceOriginals);
@@ -214,6 +237,10 @@ function App() {
       });
     }).catch(() => undefined);
 
+    const unlistenTools = listen<string>("tools-status", (event) => {
+      setToolsStatus(event.payload || "");
+    }).catch(() => undefined);
+
     return () => {
       alive = false;
       if (progressFrame !== 0) {
@@ -221,6 +248,7 @@ function App() {
       }
       void unlistenUpdated.then((fn) => fn?.());
       void unlistenProgress.then((fn) => fn?.());
+      void unlistenTools.then((fn) => fn?.());
     };
   }, []);
 
@@ -395,18 +423,23 @@ function App() {
   }, [previewExpanded]);
 
   async function openVideoPicker() {
-    const selected = await open({
-      multiple: true,
-      directory: false,
-      title: "Pick videos",
-      filters: VIDEO_FILTERS,
-    });
-
-    if (selected === null) {
+    setError("");
+    let paths: string[] | null;
+    try {
+      paths = await invoke<string[] | null>("pick_videos");
+    } catch (err) {
+      setError(
+        typeof err === "string"
+          ? err
+          : "couldnt open the file picker — try dropping a video instead",
+      );
       return;
     }
 
-    const paths = Array.isArray(selected) ? selected : [selected];
+    if (!paths || paths.length === 0) {
+      return;
+    }
+
     await handleDroppedPaths(paths);
   }
 
@@ -415,17 +448,19 @@ function App() {
   }
 
   async function pickFolder() {
-    const selected = await open({
-      multiple: false,
-      directory: true,
-      title: "Pick a folder of videos",
-    });
-
-    if (selected === null) {
+    setError("");
+    let path: string | null;
+    try {
+      path = await invoke<string | null>("pick_folder");
+    } catch (err) {
+      setError(
+        typeof err === "string"
+          ? err
+          : "couldnt open the folder picker — try dropping a folder instead",
+      );
       return;
     }
 
-    const path = Array.isArray(selected) ? selected[0] : selected;
     if (!path) {
       return;
     }
@@ -657,19 +692,21 @@ function App() {
     <div
       className={`app-shell${dragging ? " dragging" : ""}${
         isHome ? " is-home" : " is-work"
-      }`}
+      }${previewExpanded && media ? " is-fullscreen-preview" : ""}`}
     >
       {isHome && <div className="ambiance" aria-hidden="true" />}
       <div className="titlebar" data-tauri-drag-region>
-        <img
-          className="titlebar-mark"
-          src="/files/icon-fullbleed.svg"
-          width={20}
-          height={20}
-          alt=""
-          draggable={false}
-          decoding="async"
-        />
+        {!(previewExpanded && media) && (
+          <img
+            className="titlebar-mark"
+            src="/files/icon-fullbleed.svg"
+            width={20}
+            height={20}
+            alt=""
+            draggable={false}
+            decoding="async"
+          />
+        )}
       </div>
       <div className="window-controls">
         <button
@@ -736,6 +773,11 @@ function App() {
       </div>
 
       <main className={`container${isHome ? " is-home" : ""}`}>
+        {toolsStatus && (
+          <div className="tools-banner" role="status">
+            {toolsStatus}
+          </div>
+        )}
         {isHome ? (
           <section className="home" aria-label="Start">
             <div className="home-brand">
@@ -831,7 +873,7 @@ function App() {
                     checked={replaceOriginals}
                     onChange={(e) => setReplaceOriginals(e.target.checked)}
                   />
-                  Replace originals (safe)
+                  Replace originals
                 </label>
               </div>
             </section>
@@ -872,31 +914,40 @@ function App() {
           className={`preview${previewExpanded ? " is-expanded" : ""}`}
           aria-label="Preview and trim"
         >
-          <div className="preview-top">
-            <label className="rename-field">
-              <span>Output name</span>
-              <input
-                type="text"
-                value={outputName}
-                onChange={(e) => setOutputName(e.target.value)}
-                spellCheck={false}
-                autoComplete="off"
-              />
-            </label>
+          {previewExpanded ? (
             <button
               type="button"
-              className="ghost preview-expand-btn"
-              onClick={() => setPreviewExpanded((v) => !v)}
-              aria-pressed={previewExpanded}
-              title={
-                previewExpanded
-                  ? "Exit large preview (Esc)"
-                  : "Open large preview"
-              }
+              className="preview-back"
+              onClick={() => setPreviewExpanded(false)}
+              title="Exit fullscreen (Esc)"
+              aria-label="Exit fullscreen preview"
             >
-              {previewExpanded ? "Exit large view" : "Large view"}
+              <IconBack />
             </button>
-          </div>
+          ) : (
+            <div className="preview-top">
+              <label className="rename-field">
+                <span>Output name</span>
+                <input
+                  type="text"
+                  value={outputName}
+                  onChange={(e) => setOutputName(e.target.value)}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+              <button
+                type="button"
+                className="ghost preview-expand-btn"
+                onClick={() => setPreviewExpanded(true)}
+                aria-pressed={false}
+                title="Open fullscreen preview"
+              >
+                <IconExpand />
+                Fullscreen
+              </button>
+            </div>
+          )}
 
           <div className="preview-stage">
             <video
@@ -912,6 +963,19 @@ function App() {
           </div>
 
           <div className="trim-controls">
+            {previewExpanded && (
+              <label className="rename-field preview-rename">
+                <span>Output name</span>
+                <input
+                  type="text"
+                  value={outputName}
+                  onChange={(e) => setOutputName(e.target.value)}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+            )}
+
             <div className="transport">
               <button
                 type="button"
@@ -999,12 +1063,14 @@ function App() {
               </span>
             </div>
 
-            <p className="trim-summary">
-              Keep {formatDuration(trimEnd - trimStart)} ·{" "}
-              {formatSize(media.size_bytes)} · {media.width ?? "?"}×
-              {media.height ?? "?"}
-              {hasTrim ? " · trim on" : ""}
-            </p>
+            {!previewExpanded && (
+              <p className="trim-summary">
+                Keep {formatDuration(trimEnd - trimStart)} ·{" "}
+                {formatSize(media.size_bytes)} · {media.width ?? "?"}×
+                {media.height ?? "?"}
+                {hasTrim ? " · trim on" : ""}
+              </p>
+            )}
 
             <div className="row trim-actions">
               <button
@@ -1027,18 +1093,20 @@ function App() {
               >
                 Trim only
               </button>
-              <button
-                type="button"
-                className="ghost trim-close"
-                onClick={() => {
-                  setPreviewExpanded(false);
-                  setMedia(null);
-                  setPlaying(false);
-                }}
-                disabled={busy}
-              >
-                Close preview
-              </button>
+              {!previewExpanded && (
+                <button
+                  type="button"
+                  className="ghost trim-close"
+                  onClick={() => {
+                    setPreviewExpanded(false);
+                    setMedia(null);
+                    setPlaying(false);
+                  }}
+                  disabled={busy}
+                >
+                  Close preview
+                </button>
+              )}
             </div>
           </div>
         </section>
