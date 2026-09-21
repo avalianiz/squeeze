@@ -8,24 +8,34 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 use crate::error::AppError;
-use crate::filesystem::output::{beside_original, temp_path};
+use crate::filesystem::output::{
+    backup_path, beside_original_unique, replace_final_path, temp_path,
+};
 use crate::media::binaries;
 use crate::media::bitrate::{plan_bitrates, scale_video_bitrate, BitratePlan};
 use crate::media::ffprobe;
-use crate::models::{CompressResult, CompressionSettings, VideoCodec};
+use crate::models::{CompressResult, CompressionSettings, OutputMode, VideoCodec};
 
 // old one-shot path the ui used before the queue existed
 pub async fn compress(
     path: &Path,
     settings: &CompressionSettings,
 ) -> Result<CompressResult, AppError> {
-    compress_job(path, settings, Arc::new(AtomicBool::new(false)), |_, _, _| {}).await
+    compress_job(
+        path,
+        settings,
+        OutputMode::CopyBeside,
+        Arc::new(AtomicBool::new(false)),
+        |_, _, _| {},
+    )
+    .await
 }
 
 // queue calls this so we can cancel + drip progress back out
 pub async fn compress_job<F>(
     path: &Path,
     settings: &CompressionSettings,
+    output_mode: OutputMode,
     cancel: Arc<AtomicBool>,
     on_progress: F,
 ) -> Result<CompressResult, AppError>
@@ -53,13 +63,6 @@ where
 
     let plan = plan_bitrates(media.duration_seconds, settings)?;
     let temp = temp_path(path);
-    let final_out = beside_original(path);
-
-    if final_out.exists() {
-        return Err(AppError::OutputAlreadyExists(
-            final_out.display().to_string(),
-        ));
-    }
 
     encode_to(
         path,
@@ -111,10 +114,17 @@ where
         )));
     }
 
-    std::fs::rename(&temp, &final_out).map_err(|e| {
-        let _ = std::fs::remove_file(&temp);
-        AppError::EncodingFailed(e.to_string())
-    })?;
+    let final_out = match output_mode {
+        OutputMode::CopyBeside => {
+            let dest = beside_original_unique(path);
+            std::fs::rename(&temp, &dest).map_err(|e| {
+                let _ = std::fs::remove_file(&temp);
+                AppError::EncodingFailed(e.to_string())
+            })?;
+            dest
+        }
+        OutputMode::Replace => finalize_replace(path, &temp)?,
+    };
 
     on_progress(media.duration_seconds, media.duration_seconds, 100.0);
 
@@ -123,6 +133,56 @@ where
         output_size_bytes: size,
         skipped: false,
     })
+}
+
+// never overwrite the original until the temp file is good
+fn finalize_replace(original: &Path, temp: &Path) -> Result<std::path::PathBuf, AppError> {
+    let final_path = replace_final_path(original);
+    let backup = backup_path(original);
+
+    if backup.exists() {
+        let _ = std::fs::remove_file(&temp);
+        return Err(AppError::OutputAlreadyExists(backup.display().to_string()));
+    }
+
+    // same path (already .mp4): move original aside, then slide temp into place
+    if final_path == original {
+        std::fs::rename(original, &backup).map_err(|e| {
+            let _ = std::fs::remove_file(temp);
+            AppError::EncodingFailed(e.to_string())
+        })?;
+
+        if let Err(e) = std::fs::rename(temp, &final_path) {
+            let _ = std::fs::rename(&backup, original);
+            let _ = std::fs::remove_file(temp);
+            return Err(AppError::EncodingFailed(e.to_string()));
+        }
+
+        let _ = std::fs::remove_file(&backup);
+        return Ok(final_path);
+    }
+
+    // different ext (eg .mkv -> .mp4): park original, put mp4 down, then drop backup
+    if final_path.exists() {
+        let _ = std::fs::remove_file(temp);
+        return Err(AppError::OutputAlreadyExists(
+            final_path.display().to_string(),
+        ));
+    }
+
+    std::fs::rename(original, &backup).map_err(|e| {
+        let _ = std::fs::remove_file(temp);
+        AppError::EncodingFailed(e.to_string())
+    })?;
+
+    if let Err(e) = std::fs::rename(temp, &final_path) {
+        let _ = std::fs::rename(&backup, original);
+        let _ = std::fs::remove_file(temp);
+        return Err(AppError::EncodingFailed(e.to_string()));
+    }
+
+    let _ = std::fs::remove_file(&backup);
+    Ok(final_path)
 }
 
 async fn encode_to<F>(
