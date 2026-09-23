@@ -21,6 +21,7 @@ permissions:
   contents: write
 
 env:
+  SQUEEZE_FFMPEG_WORK_DIR: ${{ github.workspace }}/.ffmpeg-build
   FFMPEG_WORK_DIR: ${{ github.workspace }}/.ffmpeg-build
 
 jobs:
@@ -39,7 +40,8 @@ jobs:
             os: macos-14
             package: tar.gz
           - target: x86_64-apple-darwin
-            os: macos-13
+            # macos-13 (Intel) is retired; cross-compile x86_64 on Apple Silicon.
+            os: macos-14
             package: tar.gz
 
     runs-on: ${{ matrix.os }}
@@ -65,6 +67,8 @@ jobs:
 
       - name: Build sidecars
         run: |
+          # Guard against CRLF if someone edits scripts on Windows without gitattributes.
+          sed -i.bak 's/\r$//' scripts/ffmpeg/*.sh scripts/ffmpeg/versions.env scripts/setup-ffmpeg.sh 2>/dev/null || true
           chmod +x scripts/ffmpeg/build.sh scripts/ffmpeg/verify-capabilities.sh
           ./scripts/ffmpeg/build.sh --target "${{ matrix.target }}" --out-dir src-tauri/binaries
 

@@ -6,6 +6,10 @@
 #
 # Philosophy: --disable-everything, then enable only what Squeeze needs
 # for current workflows — not "smallest binary at any cost."
+#
+# IMPORTANT: FFmpeg configure splits --enable-demuxer=a,b on commas into
+# separate names. Use the short component name (mov, matroska), not the
+# multi-alias display string (mov,mp4,...).
 
 # shellcheck disable=SC2034
 SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
@@ -22,20 +26,14 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --disable-outdevs
   --disable-devices
   --disable-hwaccels
-  --disable-cuda-llvm
-  --disable-vulkan
   --disable-iconv
   --disable-lzma
   --disable-bzlib
   --disable-libxcb
-  --disable-libxcb-shm
-  --disable-libxcb-xfixes
-  --disable-libxcb-shape
   --disable-sdl2
   --disable-xlib
   --disable-alsa
   --disable-sndio
-  --disable-v4l2-m2m
 
   --enable-gpl
   --enable-static
@@ -65,27 +63,21 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --enable-protocol=data
 
   # --- Demuxers matching VIDEO_EXTENSIONS ---
-  # mp4 / m4v / mov
-  --enable-demuxer=mov,mp4,m4a,3gp,3g2,mj2
-  # mkv / webm
-  --enable-demuxer=matroska,webm
-  # avi
+  # Short names only (mov covers mp4/m4v/mov; matroska covers mkv/webm)
+  --enable-demuxer=mov
+  --enable-demuxer=matroska
   --enable-demuxer=avi
-  # wmv
   --enable-demuxer=asf
-  # flv
   --enable-demuxer=flv
-  # Image/sequence helpers sometimes nested in containers
   --enable-demuxer=image2
   --enable-demuxer=gif
 
-  # --- Muxers (Squeeze always writes .mp4; null for probe/tests) ---
+  # --- Muxers (Squeeze always writes .mp4) ---
   --enable-muxer=mp4
-  --enable-muxer=null
-  # Stream-copy trim remuxes into mp4; mov helps some -c copy edge cases
   --enable-muxer=mov
+  --enable-muxer=null
 
-  # --- Parsers (required to decode/remux common inputs) ---
+  # --- Parsers ---
   --enable-parser=h264
   --enable-parser=hevc
   --enable-parser=aac
@@ -104,7 +96,7 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --enable-parser=mjpeg
   --enable-parser=vp3
 
-  # --- Video decoders for supported input containers ---
+  # --- Video decoders ---
   --enable-decoder=h264
   --enable-decoder=hevc
   --enable-decoder=vp8
@@ -128,7 +120,7 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --enable-decoder=png
   --enable-decoder=gif
 
-  # --- Audio decoders for common tracks in those containers ---
+  # --- Audio decoders ---
   --enable-decoder=aac
   --enable-decoder=aac_latm
   --enable-decoder=mp3
@@ -150,21 +142,24 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --enable-decoder=pcm_bluray
   --enable-decoder=pcm_dvd
 
-  # --- Encoders (Squeeze compress path only) ---
+  # --- Encoders ---
   --enable-encoder=libx264
   --enable-encoder=aac
 
-  # --- Filters used by encode_to (-vf scale / fps) ---
+  # --- Filters ---
   --enable-filter=scale
   --enable-filter=fps
-  # Graph endpoints required when building filter chains
   --enable-filter=null
   --enable-filter=anull
   --enable-filter=aresample
   --enable-filter=format
   --enable-filter=aformat
+  --enable-filter=buffer
+  --enable-filter=buffersink
+  --enable-filter=abuffer
+  --enable-filter=abuffersink
 
-  # --- Bitstream filters auto-inserted on remux / mp4 mux ---
+  # --- Bitstream filters ---
   --enable-bsf=aac_adtstoasc
   --enable-bsf=h264_mp4toannexb
   --enable-bsf=hevc_mp4toannexb
