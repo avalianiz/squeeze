@@ -40,7 +40,8 @@ jobs:
             target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin
             bundler_ext: tar.gz
-          - platform: macos-13
+          - platform: macos-14
+            # Intel Mac apps: cross-compile from Apple Silicon runners (macos-13 retired).
             target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin
             bundler_ext: tar.gz
