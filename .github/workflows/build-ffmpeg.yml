@@ -1,0 +1,174 @@
+# Build Squeeze-minimal static ffmpeg/ffprobe sidecars for all release targets.
+#
+# Artifacts (per triple):
+#   squeeze-ffmpeg-<triple>.tar.gz  (Linux/macOS)
+#   squeeze-ffmpeg-<triple>.zip     (Windows)
+#
+# Publish a release with tag ffmpeg-sidecars-* so `npm run setup:ffmpeg` can
+# download them. Re-run when scripts/ffmpeg/versions.env or configure-flags change.
+
+name: Build FFmpeg sidecars
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/ffmpeg/**"
+      - ".github/workflows/build-ffmpeg.yml"
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+env:
+  FFMPEG_WORK_DIR: ${{ github.workspace }}/.ffmpeg-build
+
+jobs:
+  ffmpeg:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            package: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: ubuntu-22.04
+            package: zip
+          - target: aarch64-apple-darwin
+            os: macos-14
+            package: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-13
+            package: tar.gz
+
+    runs-on: ${{ matrix.os }}
+    name: ffmpeg (${{ matrix.target }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential yasm nasm pkg-config \
+            git curl ca-certificates \
+            mingw-w64
+
+      - name: Install macOS deps
+        if: runner.os == 'macOS'
+        run: |
+          brew install nasm yasm pkg-config || true
+
+      - name: Build sidecars
+        run: |
+          chmod +x scripts/ffmpeg/build.sh scripts/ffmpeg/verify-capabilities.sh
+          ./scripts/ffmpeg/build.sh --target "${{ matrix.target }}" --out-dir src-tauri/binaries
+
+      - name: Verify (native hosts)
+        if: matrix.target != 'x86_64-pc-windows-msvc'
+        run: |
+          EXT=""
+          ./scripts/ffmpeg/verify-capabilities.sh "src-tauri/binaries/ffmpeg-${{ matrix.target }}${EXT}"
+
+      - name: Package (tar.gz)
+        if: matrix.package == 'tar.gz'
+        working-directory: src-tauri/binaries
+        run: |
+          tar -czf "${{ github.workspace }}/squeeze-ffmpeg-${{ matrix.target }}.tar.gz" \
+            "ffmpeg-${{ matrix.target }}" \
+            "ffprobe-${{ matrix.target }}"
+          ls -lh "${{ github.workspace }}/squeeze-ffmpeg-${{ matrix.target }}.tar.gz"
+          ls -lh "ffmpeg-${{ matrix.target }}" "ffprobe-${{ matrix.target }}"
+
+      - name: Package (zip)
+        if: matrix.package == 'zip'
+        working-directory: src-tauri/binaries
+        run: |
+          zip -j "${{ github.workspace }}/squeeze-ffmpeg-${{ matrix.target }}.zip" \
+            "ffmpeg-${{ matrix.target }}.exe" \
+            "ffprobe-${{ matrix.target }}.exe"
+          ls -lh "${{ github.workspace }}/squeeze-ffmpeg-${{ matrix.target }}.zip"
+          ls -lh "ffmpeg-${{ matrix.target }}.exe" "ffprobe-${{ matrix.target }}.exe"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: squeeze-ffmpeg-${{ matrix.target }}
+          path: squeeze-ffmpeg-${{ matrix.target }}.${{ matrix.package }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Record sizes
+        run: |
+          mkdir -p size-reports
+          {
+            echo "target=${{ matrix.target }}"
+            echo "runner=${{ matrix.os }}"
+            if [[ -f src-tauri/binaries/ffmpeg-${{ matrix.target }} ]]; then
+              stat -c 'ffmpeg_bytes=%s' "src-tauri/binaries/ffmpeg-${{ matrix.target }}" 2>/dev/null \
+                || stat -f 'ffmpeg_bytes=%z' "src-tauri/binaries/ffmpeg-${{ matrix.target }}"
+              stat -c 'ffprobe_bytes=%s' "src-tauri/binaries/ffprobe-${{ matrix.target }}" 2>/dev/null \
+                || stat -f 'ffprobe_bytes=%z' "src-tauri/binaries/ffprobe-${{ matrix.target }}"
+            else
+              stat -c 'ffmpeg_bytes=%s' "src-tauri/binaries/ffmpeg-${{ matrix.target }}.exe"
+              stat -c 'ffprobe_bytes=%s' "src-tauri/binaries/ffprobe-${{ matrix.target }}.exe"
+            fi
+          } > "size-reports/${{ matrix.target }}.txt"
+          cat "size-reports/${{ matrix.target }}.txt"
+
+      - name: Upload size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-report-${{ matrix.target }}
+          path: size-reports/${{ matrix.target }}.txt
+
+  publish:
+    needs: ffmpeg
+    # Only mint a downloadable ffmpeg-sidecars-* release on manual runs.
+    # Push builds still upload workflow artifacts for inspection.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: squeeze-ffmpeg-*
+          merge-multiple: true
+
+      - name: Download size reports
+        uses: actions/download-artifact@v4
+        with:
+          path: size-reports
+          pattern: size-report-*
+          merge-multiple: true
+
+      - name: Summarize sizes
+        run: |
+          echo "## FFmpeg sidecar sizes" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat size-reports/*.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          ls -lh artifacts/
+
+      - name: Publish ffmpeg-sidecars release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ffmpeg-sidecars-${{ github.run_number }}
+          name: FFmpeg sidecars (${{ github.run_number }})
+          body: |
+            Squeeze-minimal static ffmpeg/ffprobe sidecars for Tauri `externalBin`.
+
+            Built from `scripts/ffmpeg/`.
+            Extract into `src-tauri/binaries/`, or run `npm run setup:ffmpeg`.
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.zip
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
