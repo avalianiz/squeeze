@@ -49,3 +49,7 @@ src-tauri/binaries/*
 *.zip
 *.tar.gz
 *.tgz
+
+# Local downloaded installers
+installers/
+
