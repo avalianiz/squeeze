@@ -1,0 +1,4 @@
+# Shell scripts must use LF so Linux/macOS CI runners can execute them.
+*.sh text eol=lf
+scripts/ffmpeg/versions.env text eol=lf
+scripts/ffmpeg/*.sh text eol=lf
