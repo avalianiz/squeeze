@@ -12,9 +12,10 @@ dist
 dist-ssr
 *.local
 
-# Editor directories and files
+# Editor / OS
 .vscode/
-.idea
+.idea/
+.cursor/
 .DS_Store
 *.suo
 *.ntvs*
@@ -22,12 +23,29 @@ dist-ssr
 *.sln
 *.sw?
 
+# Env
+.env
+.env.*
+
 # Rust / Tauri
 src-tauri/target
 
-# Local-only
-plan.md
+# Bundled sidecars (npm run setup:ffmpeg)
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
 
-# Bundled ffmpeg/ffprobe (download locally)
-src-tauri/binaries/ffmpeg.exe
-src-tauri/binaries/ffprobe.exe
+# Local FFmpeg source build tree
+.ffmpeg-build/
+
+# Installer / package artifacts
+*.exe
+*.msi
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+*.apk
+*.ipa
+*.zip
+*.tar.gz
+*.tgz
