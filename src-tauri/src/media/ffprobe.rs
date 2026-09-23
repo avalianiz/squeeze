@@ -13,7 +13,7 @@ pub async fn probe(path: &Path) -> Result<Media, AppError> {
         return Err(AppError::InputNotFound(path.display().to_string()));
     }
 
-    let ffprobe = binaries::resolve("ffprobe").map_err(|_| AppError::FfprobeNotFound)?;
+    let ffprobe = binaries::resolve("ffprobe")?;
     let mut cmd = Command::new(&ffprobe);
     cmd.args([
         "-v",

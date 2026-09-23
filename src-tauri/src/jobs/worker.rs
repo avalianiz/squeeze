@@ -45,6 +45,12 @@ async fn run_one(app: &AppHandle, manager: Arc<JobManager>, job_id: String) {
     manager.set_running(&job_id).await;
     let _ = app.emit("job-updated", manager.list().await);
 
+    if let Err(err) = crate::media::binaries::ensure() {
+        manager.set_failed(&job_id, err.to_string()).await;
+        let _ = app.emit("job-updated", manager.list().await);
+        return;
+    }
+
     let app_progress = app.clone();
     let manager_progress = manager.clone();
     let progress_id = job_id.clone();
@@ -63,17 +69,17 @@ async fn run_one(app: &AppHandle, manager: Arc<JobManager>, job_id: String) {
             let job_id = progress_id.clone();
             tauri::async_runtime::spawn(async move {
                 manager.set_progress(&job_id, percentage).await;
+                // Progress-only event — do not resend the full job list every tick.
                 let _ = app.emit(
                     "job-progress",
                     JobProgress {
-                        job_id: job_id.clone(),
+                        job_id,
                         elapsed_seconds: elapsed,
                         duration_seconds: duration,
                         percentage,
                         output_size_bytes: None,
                     },
                 );
-                let _ = app.emit("job-updated", manager.list().await);
             });
         },
     )
@@ -82,7 +88,12 @@ async fn run_one(app: &AppHandle, manager: Arc<JobManager>, job_id: String) {
     match result {
         Ok(done) => {
             manager
-                .set_succeeded(&job_id, done.output_path, done.output_size_bytes)
+                .set_succeeded(
+                    &job_id,
+                    done.output_path,
+                    done.output_size_bytes,
+                    done.skipped,
+                )
                 .await;
         }
         Err(AppError::Cancelled) => {

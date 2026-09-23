@@ -121,7 +121,7 @@ where
 
     let mut size = std::fs::metadata(&temp)
         .map(|m| m.len())
-        .map_err(|e| AppError::EncodingFailed(e.to_string()))?;
+        .map_err(|e| AppError::Io(format!("couldn't read temp output: {e}")))?;
 
     if size > settings.target_size_bytes {
         if cancel.load(Ordering::SeqCst) {
@@ -143,7 +143,7 @@ where
         .await?;
         size = std::fs::metadata(&temp)
             .map(|m| m.len())
-            .map_err(|e| AppError::EncodingFailed(e.to_string()))?;
+            .map_err(|e| AppError::Io(format!("couldn't read temp output: {e}")))?;
     }
 
     if cancel.load(Ordering::SeqCst) {
@@ -219,7 +219,7 @@ where
 
     let size = std::fs::metadata(&temp)
         .map(|m| m.len())
-        .map_err(|e| AppError::EncodingFailed(e.to_string()))?;
+        .map_err(|e| AppError::Io(format!("couldn't read temp output: {e}")))?;
 
     let final_out = finalize_output(path, &temp, output_mode, output_name, "-trimmed")?;
 
@@ -244,7 +244,7 @@ fn finalize_output(
             let dest = beside_original_unique(path, output_name, suffix);
             std::fs::rename(temp, &dest).map_err(|e| {
                 let _ = std::fs::remove_file(temp);
-                AppError::EncodingFailed(e.to_string())
+                AppError::Io(format!("couldn't move output into place: {e}"))
             })?;
             Ok(dest)
         }
@@ -261,8 +261,10 @@ fn finalize_replace(
     let final_path = replace_final_path(original, output_name);
     let backup = backup_path(original);
 
+    recover_orphaned_backup(original, &final_path, &backup)?;
+
     if backup.exists() {
-        let _ = std::fs::remove_file(&temp);
+        let _ = std::fs::remove_file(temp);
         return Err(AppError::OutputAlreadyExists(backup.display().to_string()));
     }
 
@@ -270,13 +272,13 @@ fn finalize_replace(
     if final_path == original {
         std::fs::rename(original, &backup).map_err(|e| {
             let _ = std::fs::remove_file(temp);
-            AppError::EncodingFailed(e.to_string())
+            AppError::Io(format!("couldn't back up original: {e}"))
         })?;
 
         if let Err(e) = std::fs::rename(temp, &final_path) {
             let _ = std::fs::rename(&backup, original);
             let _ = std::fs::remove_file(temp);
-            return Err(AppError::EncodingFailed(e.to_string()));
+            return Err(AppError::Io(format!("couldn't replace original: {e}")));
         }
 
         let _ = std::fs::remove_file(&backup);
@@ -293,17 +295,59 @@ fn finalize_replace(
 
     std::fs::rename(original, &backup).map_err(|e| {
         let _ = std::fs::remove_file(temp);
-        AppError::EncodingFailed(e.to_string())
+        AppError::Io(format!("couldn't back up original: {e}"))
     })?;
 
     if let Err(e) = std::fs::rename(temp, &final_path) {
         let _ = std::fs::rename(&backup, original);
         let _ = std::fs::remove_file(temp);
-        return Err(AppError::EncodingFailed(e.to_string()));
+        return Err(AppError::Io(format!("couldn't write replacement: {e}")));
     }
 
     let _ = std::fs::remove_file(&backup);
     Ok(final_path)
+}
+
+/// Clear leftover `.squeeze-backup.*` from a crashed replace so the next run can proceed.
+fn recover_orphaned_backup(
+    original: &Path,
+    final_path: &Path,
+    backup: &Path,
+) -> Result<(), AppError> {
+    if !backup.exists() {
+        return Ok(());
+    }
+
+    // Successful replace then crash before deleting backup: final exists → drop orphan.
+    if final_path.exists() && final_path != backup {
+        std::fs::remove_file(backup).map_err(|e| {
+            AppError::Io(format!(
+                "couldn't remove leftover backup {}: {e}",
+                backup.display()
+            ))
+        })?;
+        return Ok(());
+    }
+
+    // Mid-replace crash: original was moved to backup and final never landed.
+    if !original.exists() || original == backup {
+        std::fs::rename(backup, original).map_err(|e| {
+            AppError::Io(format!(
+                "couldn't restore backup {} → {}: {e}",
+                backup.display(),
+                original.display()
+            ))
+        })?;
+        return Ok(());
+    }
+
+    // Both original and backup exist (unexpected). Prefer keeping original; drop backup.
+    std::fs::remove_file(backup).map_err(|e| {
+        AppError::Io(format!(
+            "couldn't remove leftover backup {}: {e}",
+            backup.display()
+        ))
+    })
 }
 
 async fn copy_trim_to<F>(
@@ -317,7 +361,7 @@ async fn copy_trim_to<F>(
 where
     F: Fn(f64, f64, f64) + Send + Sync,
 {
-    let ffmpeg = binaries::resolve("ffmpeg").map_err(|_| AppError::FfmpegNotFound)?;
+    let ffmpeg = binaries::resolve("ffmpeg")?;
 
     if output.exists() {
         let _ = std::fs::remove_file(output);
@@ -442,7 +486,7 @@ async fn encode_to<F>(
 where
     F: Fn(f64, f64, f64) + Send + Sync,
 {
-    let ffmpeg = binaries::resolve("ffmpeg").map_err(|_| AppError::FfmpegNotFound)?;
+    let ffmpeg = binaries::resolve("ffmpeg")?;
 
     if output.exists() {
         let _ = std::fs::remove_file(output);
@@ -494,8 +538,9 @@ where
 
     let mut filters: Vec<String> = Vec::new();
     if let (Some(w), Some(h)) = (settings.max_width, settings.max_height) {
+        // force_divisible_by=2 keeps libx264-safe even dimensions after aspect fit
         filters.push(format!(
-            "scale='min({w},iw)':'min({h},ih)':force_original_aspect_ratio=decrease"
+            "scale='min({w},iw)':'min({h},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
         ));
     } else if let Some(w) = settings.max_width {
         filters.push(format!("scale='min({w},iw)':-2"));
