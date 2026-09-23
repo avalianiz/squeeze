@@ -1,15 +1,6 @@
 #!/usr/bin/env bash
 # Shared FFmpeg configure flags for Squeeze sidecars.
-#
-# Derived from Squeeze's ffmpeg/ffprobe usage in src-tauri/src/media/
-# and supported input extensions. Do not shrink without re-auditing.
-#
-# Philosophy: --disable-everything, then enable only what Squeeze needs
-# for current workflows — not "smallest binary at any cost."
-#
-# IMPORTANT: FFmpeg configure splits --enable-demuxer=a,b on commas into
-# separate names. Use the short component name (mov, matroska), not the
-# multi-alias display string (mov,mp4,...).
+# FFmpeg splits --enable-demuxer=a,b on commas — use short names only (mov, matroska).
 
 # shellcheck disable=SC2034
 SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
@@ -26,14 +17,7 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --disable-outdevs
   --disable-devices
   --disable-hwaccels
-  --disable-iconv
-  --disable-lzma
-  --disable-bzlib
-  --disable-libxcb
-  --disable-sdl2
-  --disable-xlib
-  --disable-alsa
-  --disable-sndio
+  --disable-ffplay
 
   --enable-gpl
   --enable-static
@@ -41,12 +25,9 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --enable-runtime-cpudetect
   --enable-pic
 
-  # Programs Squeeze ships as Tauri sidecars
   --enable-ffmpeg
   --enable-ffprobe
-  --disable-ffplay
 
-  # Core libs (scale filter needs swscale; aresample may be pulled by aac path)
   --enable-avcodec
   --enable-avformat
   --enable-avutil
@@ -54,16 +35,12 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --enable-swscale
   --enable-swresample
 
-  # External encoder used by Squeeze compress path (-c:v libx264)
   --enable-libx264
 
-  # --- Protocols (file I/O + progress on pipe:1) ---
   --enable-protocol=file
   --enable-protocol=pipe
   --enable-protocol=data
 
-  # --- Demuxers matching VIDEO_EXTENSIONS ---
-  # Short names only (mov covers mp4/m4v/mov; matroska covers mkv/webm)
   --enable-demuxer=mov
   --enable-demuxer=matroska
   --enable-demuxer=avi
@@ -72,12 +49,10 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --enable-demuxer=image2
   --enable-demuxer=gif
 
-  # --- Muxers (Squeeze always writes .mp4) ---
   --enable-muxer=mp4
   --enable-muxer=mov
   --enable-muxer=null
 
-  # --- Parsers ---
   --enable-parser=h264
   --enable-parser=hevc
   --enable-parser=aac
@@ -96,7 +71,6 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --enable-parser=mjpeg
   --enable-parser=vp3
 
-  # --- Video decoders ---
   --enable-decoder=h264
   --enable-decoder=hevc
   --enable-decoder=vp8
@@ -120,7 +94,6 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --enable-decoder=png
   --enable-decoder=gif
 
-  # --- Audio decoders ---
   --enable-decoder=aac
   --enable-decoder=aac_latm
   --enable-decoder=mp3
@@ -142,11 +115,9 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --enable-decoder=pcm_bluray
   --enable-decoder=pcm_dvd
 
-  # --- Encoders ---
   --enable-encoder=libx264
   --enable-encoder=aac
 
-  # --- Filters ---
   --enable-filter=scale
   --enable-filter=fps
   --enable-filter=null
@@ -159,7 +130,6 @@ SQUEEZE_FFMPEG_CONFIGURE_FLAGS=(
   --enable-filter=abuffer
   --enable-filter=abuffersink
 
-  # --- Bitstream filters ---
   --enable-bsf=aac_adtstoasc
   --enable-bsf=h264_mp4toannexb
   --enable-bsf=hevc_mp4toannexb

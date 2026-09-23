@@ -67,16 +67,37 @@ jobs:
 
       - name: Build sidecars
         run: |
+          set -euxo pipefail
           # Guard against CRLF if someone edits scripts on Windows without gitattributes.
-          sed -i.bak 's/\r$//' scripts/ffmpeg/*.sh scripts/ffmpeg/versions.env scripts/setup-ffmpeg.sh 2>/dev/null || true
+          if [[ "$(uname -s)" == "Darwin" ]]; then
+            for f in scripts/ffmpeg/*.sh scripts/ffmpeg/versions.env scripts/setup-ffmpeg.sh; do
+              [[ -f "$f" ]] || continue
+              sed -i.bak 's/\r$//' "$f"
+              rm -f "${f}.bak"
+            done
+          else
+            sed -i 's/\r$//' scripts/ffmpeg/*.sh scripts/ffmpeg/versions.env scripts/setup-ffmpeg.sh || true
+          fi
           chmod +x scripts/ffmpeg/build.sh scripts/ffmpeg/verify-capabilities.sh
+          head -1 scripts/ffmpeg/build.sh | od -An -tx1 | head -1
           ./scripts/ffmpeg/build.sh --target "${{ matrix.target }}" --out-dir src-tauri/binaries
 
+      - name: Upload configure logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-fail-logs-${{ matrix.target }}
+          path: |
+            .ffmpeg-build/**/config.log
+            .ffmpeg-build/**/ffbuild/config.log
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Verify (native hosts)
-        if: matrix.target != 'x86_64-pc-windows-msvc'
+        # Skip Windows (mingw cross) and macOS Intel (cross-built on Apple Silicon runners).
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-apple-darwin'
         run: |
-          EXT=""
-          ./scripts/ffmpeg/verify-capabilities.sh "src-tauri/binaries/ffmpeg-${{ matrix.target }}${EXT}"
+          ./scripts/ffmpeg/verify-capabilities.sh "src-tauri/binaries/ffmpeg-${{ matrix.target }}"
 
       - name: Package (tar.gz)
         if: matrix.package == 'tar.gz'

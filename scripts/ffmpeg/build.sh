@@ -1,15 +1,5 @@
 #!/usr/bin/env bash
 # Build Squeeze-minimal static ffmpeg + ffprobe for one Tauri target triple.
-#
-# Usage:
-#   ./scripts/ffmpeg/build.sh --target <tauri-triple> [--out-dir DIR]
-#
-# Supported targets:
-#   x86_64-pc-windows-msvc      (cross from Linux via mingw-w64)
-#   x86_64-unknown-linux-gnu
-#   aarch64-apple-darwin
-#   x86_64-apple-darwin         (native on Intel Mac, or cross from Apple Silicon)
-
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -26,77 +16,89 @@ JOBS="${SQUEEZE_FFMPEG_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/nul
 usage() {
   cat <<'EOF'
 Usage: build.sh --target <triple> [--out-dir DIR]
-
-Targets:
-  x86_64-pc-windows-msvc
-  x86_64-unknown-linux-gnu
-  aarch64-apple-darwin
-  x86_64-apple-darwin
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --target)
-      TARGET="${2:?}"
-      shift 2
-      ;;
-    --out-dir)
-      OUT_DIR="${2:?}"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown arg: $1" >&2
-      usage >&2
-      exit 1
-      ;;
+    --target) TARGET="${2:?}"; shift 2 ;;
+    --out-dir) OUT_DIR="${2:?}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown arg: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
 
 if [[ -z "$TARGET" ]]; then
   echo "error: --target is required" >&2
-  usage >&2
   exit 1
 fi
 
 EXE_SUFFIX=""
 case "$TARGET" in
-  x86_64-pc-windows-msvc)
-    EXE_SUFFIX=".exe"
-    ;;
-  x86_64-unknown-linux-gnu|aarch64-apple-darwin|x86_64-apple-darwin)
-    ;;
-  *)
-    echo "error: unsupported target '$TARGET'" >&2
-    usage >&2
-    exit 1
-    ;;
+  x86_64-pc-windows-msvc) EXE_SUFFIX=".exe" ;;
+  x86_64-unknown-linux-gnu|aarch64-apple-darwin|x86_64-apple-darwin) ;;
+  *) echo "error: unsupported target '$TARGET'" >&2; exit 1 ;;
 esac
 
 mkdir -p "$WORK_DIR" "$OUT_DIR"
 cd "$WORK_DIR"
+echo "WORK_DIR=$WORK_DIR OUT_DIR=$OUT_DIR TARGET=$TARGET JOBS=$JOBS"
 
 fetch_x264() {
-  if [[ ! -d x264 ]]; then
-    echo "Cloning x264 ($X264_VERSION)..."
-    if ! git clone --depth 1 --branch "$X264_VERSION" https://code.videolan.org/videolan/x264.git x264; then
-      echo "videolan clone failed; trying GitHub mirror..."
-      git clone --depth 1 --branch "$X264_VERSION" https://github.com/mirror/x264.git x264 \
-        || git clone --depth 1 https://github.com/mirror/x264.git x264
-    fi
+  if [[ -d x264/.git ]]; then
+    echo "x264 already present"
+    return 0
   fi
+  rm -rf x264
+  echo "Cloning x264..."
+  # Prefer GitHub mirror (more reliable on Actions than code.videolan.org).
+  if git clone --depth 1 https://github.com/mirror/x264.git x264; then
+    return 0
+  fi
+  git clone --depth 1 https://code.videolan.org/videolan/x264.git x264
 }
 
 fetch_ffmpeg() {
   local tag="n${FFMPEG_VERSION}"
-  if [[ ! -d ffmpeg ]]; then
-    echo "Cloning FFmpeg ($tag)..."
-    git clone --depth 1 --branch "$tag" https://github.com/FFmpeg/FFmpeg.git ffmpeg
+  if [[ -d ffmpeg/.git ]]; then
+    echo "ffmpeg already present"
+    return 0
   fi
+  rm -rf ffmpeg
+  echo "Cloning FFmpeg $tag..."
+  git clone --depth 1 --branch "$tag" https://github.com/FFmpeg/FFmpeg.git ffmpeg
+}
+
+require_x264_pc() {
+  local prefix="$1"
+  local pc=""
+  for candidate in \
+    "$prefix/lib/pkgconfig/x264.pc" \
+    "$prefix/lib64/pkgconfig/x264.pc" \
+    "$prefix/lib/x86_64-linux-gnu/pkgconfig/x264.pc"
+  do
+    if [[ -f "$candidate" ]]; then
+      pc="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$pc" ]]; then
+    echo "error: x264.pc not found under $prefix after install" >&2
+    find "$prefix" -name 'x264*' -print >&2 || true
+    exit 1
+  fi
+  local pcdir
+  pcdir="$(dirname "$pc")"
+  export PKG_CONFIG_PATH="$pcdir${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+  echo "Found $pc"
+  pkg-config --exists x264 || {
+    echo "error: pkg-config cannot resolve x264" >&2
+    pkg-config --debug x264 >&2 || true
+    exit 1
+  }
+  echo "x264 version: $(pkg-config --modversion x264)"
+  echo "x264 cflags: $(pkg-config --cflags x264)"
+  echo "x264 libs: $(pkg-config --libs --static x264)"
 }
 
 build_x264_unix() {
@@ -104,6 +106,7 @@ build_x264_unix() {
   shift
   pushd x264 >/dev/null
   make distclean >/dev/null 2>&1 || true
+  echo "Configuring x264..."
   ./configure \
     --prefix="$prefix" \
     --enable-static \
@@ -114,18 +117,30 @@ build_x264_unix() {
   make -j"$JOBS"
   make install
   popd >/dev/null
+  require_x264_pc "$prefix"
+}
+
+dump_ffmpeg_config_log() {
+  pushd ffmpeg >/dev/null || return 0
+  for f in ffbuild/config.log config.log; do
+    if [[ -f "$f" ]]; then
+      echo "===== $f (tail) =====" >&2
+      tail -n 120 "$f" >&2 || true
+    fi
+  done
+  popd >/dev/null || true
 }
 
 build_ffmpeg_unix() {
   local prefix="$1"
-  local pkg_config_path="$2"
-  shift 2
+  shift
+  # remaining args: extra configure flags
 
+  require_x264_pc "$prefix"
   pushd ffmpeg >/dev/null
   make distclean >/dev/null 2>&1 || true
 
-  export PKG_CONFIG_PATH="$pkg_config_path${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-  echo "Configuring FFmpeg (PKG_CONFIG_PATH=$PKG_CONFIG_PATH)..."
+  echo "Configuring FFmpeg..."
   if ! ./configure \
     --prefix="$prefix" \
     --pkg-config-flags="--static" \
@@ -133,12 +148,7 @@ build_ffmpeg_unix() {
     --extra-ldflags="-L${prefix}/lib" \
     "${SQUEEZE_FFMPEG_CONFIGURE_FLAGS[@]}" \
     "$@"; then
-    echo "FFmpeg configure failed. Last 80 lines of ffbuild/config.log (if any):" >&2
-    if [[ -f ffbuild/config.log ]]; then
-      tail -n 80 ffbuild/config.log >&2
-    elif [[ -f config.log ]]; then
-      tail -n 80 config.log >&2
-    fi
+    dump_ffmpeg_config_log
     exit 1
   fi
 
@@ -154,14 +164,12 @@ install_sidecars() {
   local ffmpeg_dst="$OUT_DIR/ffmpeg-${TARGET}${EXE_SUFFIX}"
   local ffprobe_dst="$OUT_DIR/ffprobe-${TARGET}${EXE_SUFFIX}"
 
-  if [[ ! -f "$ffmpeg_src" || ! -f "$ffprobe_src" ]]; then
+  if [[ ! -f "$ffmpeg_src" ]]; then
     ffmpeg_src="$prefix/bin/ffmpeg"
     ffprobe_src="$prefix/bin/ffprobe"
-    if [[ -n "$EXE_SUFFIX" ]]; then
-      if [[ -f "${ffmpeg_src}${EXE_SUFFIX}" ]]; then
-        ffmpeg_src="${ffmpeg_src}${EXE_SUFFIX}"
-        ffprobe_src="${ffprobe_src}${EXE_SUFFIX}"
-      fi
+    if [[ -n "$EXE_SUFFIX" && -f "${ffmpeg_src}${EXE_SUFFIX}" ]]; then
+      ffmpeg_src="${ffmpeg_src}${EXE_SUFFIX}"
+      ffprobe_src="${ffprobe_src}${EXE_SUFFIX}"
     fi
   fi
 
@@ -174,8 +182,6 @@ install_sidecars() {
   cp -f "$ffmpeg_src" "$ffmpeg_dst"
   cp -f "$ffprobe_src" "$ffprobe_dst"
   chmod +x "$ffmpeg_dst" "$ffprobe_dst" 2>/dev/null || true
-
-  echo "Installed:"
   ls -lh "$ffmpeg_dst" "$ffprobe_dst"
 }
 
@@ -185,7 +191,6 @@ verify_sidecars() {
     echo "Skipping runtime verify for cross-built Windows binaries."
     return 0
   fi
-  # Cross-built macOS Intel binary on Apple Silicon — skip (Rosetta optional).
   if [[ "$TARGET" == "x86_64-apple-darwin" && "$(uname -m)" == "arm64" ]]; then
     echo "Skipping runtime verify for cross-built x86_64 macOS binary."
     return 0
@@ -214,15 +219,14 @@ case "$TARGET" in
     fetch_x264
     fetch_ffmpeg
     build_x264_unix "$PREFIX"
-    build_ffmpeg_unix "$PREFIX" "$PREFIX/lib/pkgconfig" \
-      --extra-libs="-lpthread -lm"
+    build_ffmpeg_unix "$PREFIX" --extra-libs="-lpthread -lm"
     install_sidecars "$PREFIX"
     verify_sidecars
     ;;
 
   x86_64-pc-windows-msvc)
     if ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
-      echo "error: x86_64-w64-mingw32-gcc not found (install mingw-w64)" >&2
+      echo "error: x86_64-w64-mingw32-gcc not found" >&2
       exit 1
     fi
     PREFIX="$WORK_DIR/prefix-win-x64"
@@ -230,15 +234,23 @@ case "$TARGET" in
     mkdir -p "$PREFIX"
     fetch_x264
     fetch_ffmpeg
+    # pkg-config for cross builds often needs these.
+    export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
+    export PKG_CONFIG="pkg-config"
     build_x264_unix "$PREFIX" \
       --host=x86_64-w64-mingw32 \
       --cross-prefix=x86_64-w64-mingw32-
-    build_ffmpeg_unix "$PREFIX" "$PREFIX/lib/pkgconfig" \
+    # Rewrite x264.pc prefix if needed (mingw installs can confuse pkg-config).
+    if [[ -f "$PREFIX/lib/pkgconfig/x264.pc" ]]; then
+      sed -i.bak "s|^prefix=.*|prefix=$PREFIX|" "$PREFIX/lib/pkgconfig/x264.pc"
+    fi
+    build_ffmpeg_unix "$PREFIX" \
       --target-os=mingw32 \
       --arch=x86_64 \
       --cross-prefix=x86_64-w64-mingw32- \
       --extra-libs="-static -lpthread" \
-      --enable-cross-compile
+      --enable-cross-compile \
+      --pkg-config=pkg-config
     install_sidecars "$PREFIX"
     verify_sidecars
     ;;
@@ -252,6 +264,7 @@ case "$TARGET" in
     want_arch="arm64"
     [[ "$TARGET" == "x86_64-apple-darwin" ]] && want_arch="x86_64"
 
+    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
     PREFIX="$WORK_DIR/prefix-${TARGET}"
     rm -rf "$PREFIX"
     mkdir -p "$PREFIX"
@@ -260,18 +273,16 @@ case "$TARGET" in
 
     if [[ "$host_machine" == "$want_arch" ]]; then
       build_x264_unix "$PREFIX"
-      build_ffmpeg_unix "$PREFIX" "$PREFIX/lib/pkgconfig" \
-        --extra-libs="-lpthread -lm"
+      build_ffmpeg_unix "$PREFIX" --extra-libs="-lpthread -lm"
     else
       echo "Cross-compiling macOS $want_arch on $host_machine host..."
       export CC="clang -arch ${want_arch}"
       export CXX="clang++ -arch ${want_arch}"
-      export AS="clang -arch ${want_arch}"
       build_x264_unix "$PREFIX" \
         --host="${want_arch}-apple-darwin" \
         --extra-cflags="-arch ${want_arch}" \
         --extra-ldflags="-arch ${want_arch}"
-      build_ffmpeg_unix "$PREFIX" "$PREFIX/lib/pkgconfig" \
+      build_ffmpeg_unix "$PREFIX" \
         --enable-cross-compile \
         --arch="${want_arch}" \
         --target-os=darwin \
@@ -279,7 +290,7 @@ case "$TARGET" in
         --extra-cflags="-arch ${want_arch}" \
         --extra-ldflags="-arch ${want_arch}" \
         --extra-libs="-lpthread -lm"
-      unset CC CXX AS
+      unset CC CXX
     fi
     install_sidecars "$PREFIX"
     verify_sidecars
