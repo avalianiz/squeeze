@@ -6,7 +6,10 @@ pub enum VideoCodec {
     H264,
 }
 
-
+/// Encoder knobs used by the ffmpeg pipeline.
+///
+/// `max_width` / `max_height` / `max_fps` are applied when set (see `encode_to`).
+/// `discord()` leaves them unset until the UI exposes size/quality controls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressionSettings {
     pub target_size_bytes: u64,

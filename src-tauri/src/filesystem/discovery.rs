@@ -37,15 +37,15 @@ pub fn discover_videos(root: &Path, recursive: bool) -> Result<Vec<PathBuf>, App
 
 fn scan_dir(dir: &Path, recursive: bool, out: &mut Vec<PathBuf>) -> Result<(), AppError> {
     let entries = std::fs::read_dir(dir).map_err(|e| {
-        AppError::EncodingFailed(format!("cant read {}: {e}", dir.display()))
+        AppError::Io(format!("cant read {}: {e}", dir.display()))
     })?;
 
     for entry in entries {
-        let entry = entry.map_err(|e| AppError::EncodingFailed(e.to_string()))?;
+        let entry = entry.map_err(|e| AppError::Io(e.to_string()))?;
         let path = entry.path();
         let file_type = entry
             .file_type()
-            .map_err(|e| AppError::EncodingFailed(e.to_string()))?;
+            .map_err(|e| AppError::Io(e.to_string()))?;
 
         if file_type.is_dir() {
             if recursive {
@@ -72,11 +72,7 @@ fn is_source_video(path: &Path) -> bool {
         None => return false,
     };
 
-    // dont pick up stuff we already made
-    if name.contains(".tmp-compressed.")
-        || name.contains("-squeezed")
-        || name.contains(".squeeze-backup.")
-    {
+    if is_squeeze_generated_name(&name) {
         return false;
     }
 
@@ -88,16 +84,61 @@ fn is_source_video(path: &Path) -> bool {
     VIDEO_EXTENSIONS.iter().any(|ok| *ok == ext)
 }
 
+/// True for names Squeeze itself writes (temps, backups, beside-outputs).
+/// Uses stem suffixes so `my-trimmed-clips.mp4` is kept while `clip-trimmed.mp4` is skipped.
+fn is_squeeze_generated_name(file_name_lower: &str) -> bool {
+    if file_name_lower.contains(".tmp-compressed.")
+        || file_name_lower.contains(".squeeze-backup.")
+    {
+        return true;
+    }
+
+    let stem = match file_name_lower.rsplit_once('.') {
+        Some((stem, _)) => stem,
+        None => file_name_lower,
+    };
+
+    stem_has_generated_suffix(stem, "-squeezed") || stem_has_generated_suffix(stem, "-trimmed")
+}
+
+fn stem_has_generated_suffix(stem: &str, suffix: &str) -> bool {
+    if stem.ends_with(suffix) {
+        // Require a real stem before the marker (`clip-squeezed`, not bare `-squeezed`).
+        return stem.len() > suffix.len();
+    }
+
+    let marker = format!("{suffix}-");
+    if let Some(idx) = stem.rfind(&marker) {
+        let after = &stem[idx + marker.len()..];
+        // `clip-squeezed-2` / `clip-trimmed-10` — not `clip-trimmed-final`.
+        return !after.is_empty() && after.chars().all(|c| c.is_ascii_digit());
+    }
+
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn skips_squeezed_names() {
+    fn skips_squeezed_and_trimmed_outputs() {
         assert!(!is_source_video(Path::new("clip-squeezed.mp4")));
+        assert!(!is_source_video(Path::new("clip-squeezed-2.mp4")));
+        assert!(!is_source_video(Path::new("clip-trimmed.mp4")));
+        assert!(!is_source_video(Path::new("clip-trimmed-3.mp4")));
         assert!(!is_source_video(Path::new("clip.tmp-compressed.mp4")));
+        assert!(!is_source_video(Path::new("clip.squeeze-backup.mp4")));
+    }
+
+    #[test]
+    fn keeps_legitimate_user_names() {
         assert!(is_source_video(Path::new("clip.mp4")));
         assert!(is_source_video(Path::new("CLIP.MKV")));
+        // substring only — not our beside suffix
+        assert!(is_source_video(Path::new("my-trimmed-clips.mp4")));
+        assert!(is_source_video(Path::new("squeezed-raw-take.mp4")));
+        assert!(is_source_video(Path::new("clip-trimmed-final.mp4")));
     }
 
     #[test]

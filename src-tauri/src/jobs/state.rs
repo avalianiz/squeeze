@@ -50,6 +50,7 @@ impl JobManager {
             trim,
             kind,
             output_name,
+            skipped: false,
         };
 
         let mut inner = self.inner.lock().await;
@@ -117,23 +118,35 @@ impl JobManager {
         false
     }
 
+    /// Re-queue the same job id (no duplicate row). Keeps ingest dedupe consistent.
     pub async fn retry(&self, job_id: &str) -> Option<CompressionJob> {
-        let inner = self.inner.lock().await;
-        let (input, mode, trim, kind, output_name) = {
-            let job = inner.jobs.iter().find(|j| j.id == job_id)?;
+        let mut inner = self.inner.lock().await;
+        let cloned = {
+            let job = inner.jobs.iter_mut().find(|j| j.id == job_id)?;
             if !matches!(job.status, JobStatus::Failed | JobStatus::Cancelled) {
                 return None;
             }
-            (
-                job.input_path.clone(),
-                job.output_mode,
-                job.trim.clone(),
-                job.kind,
-                job.output_name.clone(),
-            )
+
+            job.status = JobStatus::Queued;
+            job.error = None;
+            job.progress_percent = 0.0;
+            job.output_path = None;
+            job.output_size_bytes = None;
+            job.skipped = false;
+            job.clone()
         };
+
+        if let Some(flag) = inner.cancels.get(job_id) {
+            flag.store(false, Ordering::SeqCst);
+        } else {
+            inner
+                .cancels
+                .insert(job_id.to_string(), Arc::new(AtomicBool::new(false)));
+        }
+
         drop(inner);
-        Some(self.enqueue(input, mode, trim, kind, output_name).await)
+        self.wake.notify_one();
+        Some(cloned)
     }
 
     pub async fn cancel_flag(&self, job_id: &str) -> Option<Arc<AtomicBool>> {
@@ -161,6 +174,7 @@ impl JobManager {
         job_id: &str,
         output_path: String,
         output_size_bytes: u64,
+        skipped: bool,
     ) {
         let mut inner = self.inner.lock().await;
         if let Some(job) = inner.jobs.iter_mut().find(|j| j.id == job_id) {
@@ -168,6 +182,7 @@ impl JobManager {
             job.progress_percent = 100.0;
             job.output_path = Some(output_path);
             job.output_size_bytes = Some(output_size_bytes);
+            job.skipped = skipped;
             job.error = None;
         }
     }

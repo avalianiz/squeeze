@@ -31,6 +31,7 @@ fn clean_output_name(name: Option<String>) -> Option<String> {
 
 #[tauri::command]
 async fn probe_media(path: String) -> Result<Media, AppError> {
+    media::binaries::ensure()?;
     media::ffprobe::probe(Path::new(&path)).await
 }
 
@@ -68,6 +69,7 @@ async fn ingest_paths(
     replace: bool,
     manager: State<'_, Arc<JobManager>>,
 ) -> Result<DropIngestResult, AppError> {
+    media::binaries::ensure()?;
     if paths.is_empty() {
         return Err(AppError::InvalidVideo("nothing was dropped".to_string()));
     }
@@ -225,7 +227,7 @@ async fn retry_job(
     manager
         .retry(&job_id)
         .await
-        .ok_or_else(|| AppError::EncodingFailed("cant retry that job".to_string()))
+        .ok_or_else(|| AppError::Io("cant retry that job".to_string()))
 }
 
 #[tauri::command]
@@ -238,13 +240,49 @@ async fn cancel_all_jobs(manager: State<'_, Arc<JobManager>>) -> Result<usize, A
     Ok(manager.cancel_all_pending().await)
 }
 
+const VIDEO_EXTENSIONS: &[&str] = discovery::VIDEO_EXTENSIONS;
+
+/// Native picker without parenting to the undecorated window (that often hides the dialog on Windows).
+#[tauri::command]
+async fn pick_videos() -> Result<Option<Vec<String>>, AppError> {
+    let picked = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Pick videos")
+            .add_filter("Video", VIDEO_EXTENSIONS)
+            .pick_files()
+            .map(|paths| {
+                paths
+                    .into_iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+            })
+    })
+    .await
+    .map_err(|err| AppError::PickerFailed(err.to_string()))?;
+
+    Ok(picked)
+}
+
+#[tauri::command]
+async fn pick_folder() -> Result<Option<String>, AppError> {
+    let picked = tauri::async_runtime::spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_title("Pick a folder of videos")
+            .pick_folder()
+            .map(|path| path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|err| AppError::PickerFailed(err.to_string()))?;
+
+    Ok(picked)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let manager = Arc::new(JobManager::new());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
         .manage(manager.clone())
         .setup(move |app| {
             worker::spawn_worker(app.handle().clone(), manager);
@@ -265,7 +303,9 @@ pub fn run() {
             cancel_job,
             retry_job,
             clear_finished_jobs,
-            cancel_all_jobs
+            cancel_all_jobs,
+            pick_videos,
+            pick_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

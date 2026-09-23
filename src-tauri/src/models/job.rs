@@ -27,6 +27,9 @@ pub struct CompressionJob {
     pub kind: JobKind,
     /// Optional output file stem (no extension). Sanitized before write.
     pub output_name: Option<String>,
+    /// True when Squeeze skipped encoding because the file already fit the target.
+    #[serde(default)]
+    pub skipped: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

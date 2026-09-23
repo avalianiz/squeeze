@@ -137,6 +137,14 @@ body {
   pointer-events: auto;
 }
 
+.app-shell.is-fullscreen-preview .titlebar {
+  pointer-events: none;
+}
+
+.app-shell.is-fullscreen-preview .titlebar-mark {
+  display: none;
+}
+
 .titlebar-mark {
   width: 1.25rem;
   height: 1.25rem;
@@ -626,6 +634,17 @@ kbd {
   color: var(--danger);
 }
 
+.tools-banner {
+  margin: 0 0 0.85rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 550;
+}
+
 /* —— Preview —— */
 .preview {
   margin: 0 0 1rem;
@@ -660,6 +679,36 @@ kbd {
   font-weight: 650;
   padding: 0.4rem 0.7rem;
   min-height: 2.1rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.preview-back {
+  position: absolute;
+  top: 0.65rem;
+  left: 0.65rem;
+  z-index: 3;
+  width: 2.5rem;
+  height: 2.5rem;
+  min-height: 2.5rem;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  background: rgba(7, 10, 16, 0.72);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  transition: background 0.15s var(--ease), border-color 0.15s var(--ease),
+    transform 0.15s var(--ease);
+}
+
+.preview-back:hover:not(:disabled) {
+  background: rgba(18, 22, 30, 0.92);
+  border-color: var(--accent);
+  transform: translateX(-1px);
 }
 
 .preview-stage {
@@ -681,52 +730,65 @@ kbd {
 
 .preview.is-expanded {
   position: fixed;
-  inset: var(--titlebar-h) 0 0;
-  z-index: 30;
+  inset: 0;
+  z-index: 45;
   margin: 0;
-  padding: clamp(0.55rem, 1.5vh, 0.85rem) var(--page-pad-x) var(--page-pad-bottom);
+  padding: 0;
   border-radius: 0;
   border: none;
-  border-top: 1px solid var(--line);
-  background: #070a10;
+  background: #000;
   box-shadow: none;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  animation: fade-in 0.2s var(--ease);
-  overflow: auto;
-}
-
-.preview.is-expanded .preview-top {
-  flex-shrink: 0;
-  max-width: min(48rem, 100%);
-  width: 100%;
-  margin-inline: auto;
+  height: 100%;
+  animation: fade-in 0.18s var(--ease);
+  overflow: hidden;
+  contain: none;
 }
 
 .preview.is-expanded .preview-stage {
   flex: 1 1 auto;
-  min-height: clamp(8rem, 40vh, 28rem);
+  min-height: 0;
+  width: 100%;
+  margin: 0;
+  border-radius: 0;
+  background: #000;
   display: grid;
   place-items: center;
-  max-width: min(56rem, 100%);
-  width: 100%;
-  margin: 0 auto 0.75rem;
-  background: #05070c;
 }
 
 .preview.is-expanded .preview-video {
   width: 100%;
   height: 100%;
-  max-height: min(70vh, 100%);
+  max-height: none;
   border-radius: 0;
+  object-fit: contain;
 }
 
 .preview.is-expanded .trim-controls {
-  flex-shrink: 0;
-  max-width: min(48rem, 100%);
+  flex: 0 0 auto;
   width: 100%;
-  margin: 0 auto;
+  max-width: none;
+  margin: 0;
+  padding: 0.65rem var(--page-pad-x) calc(0.65rem + env(safe-area-inset-bottom, 0px));
+  gap: 0.55rem;
+  background: linear-gradient(180deg, rgba(7, 10, 16, 0.88), #070a10 40%);
+  border-top: 1px solid var(--line);
+  backdrop-filter: blur(12px);
+}
+
+.preview.is-expanded .preview-rename {
+  margin: 0;
+  max-width: 22rem;
+}
+
+.preview.is-expanded .trim-actions {
+  margin-top: 0;
+}
+
+.preview.is-expanded .scrub-times {
+  font-size: 0.78rem;
 }
 
 .trim-controls {
@@ -1150,7 +1212,15 @@ kbd {
   }
 
   .preview-expand-btn {
-    width: 100%;
+    width: auto;
+  }
+
+  .preview-back {
+    top: 0.45rem;
+    left: 0.45rem;
+    width: 2.35rem;
+    height: 2.35rem;
+    min-height: 2.35rem;
   }
 
   .trim-actions .trim-close {
@@ -1211,7 +1281,21 @@ kbd {
   }
 
   .preview.is-expanded .preview-stage {
-    min-height: 6rem;
+    min-height: 0;
+  }
+
+  .preview.is-expanded .trim-controls {
+    padding-top: 0.45rem;
+    padding-bottom: 0.45rem;
+    gap: 0.4rem;
+  }
+
+  .preview.is-expanded .scrub-times {
+    display: none;
+  }
+
+  .preview.is-expanded .preview-rename span {
+    display: none;
   }
 }
 
@@ -1226,10 +1310,6 @@ kbd {
 
   .container.is-home {
     overflow-y: auto;
-  }
-
-  .preview.is-expanded .rename-field span {
-    display: none;
   }
 }
 
