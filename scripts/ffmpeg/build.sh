@@ -13,6 +13,8 @@ OUT_DIR="$ROOT/src-tauri/binaries"
 WORK_DIR="${SQUEEZE_FFMPEG_WORK_DIR:-${FFMPEG_WORK_DIR:-$ROOT/.ffmpeg-build}}"
 JOBS="${SQUEEZE_FFMPEG_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 
+# Resolved after arg parse — must be absolute before we cd into WORK_DIR.
+
 usage() {
   cat <<'EOF'
 Usage: build.sh --target <triple> [--out-dir DIR]
@@ -33,6 +35,16 @@ if [[ -z "$TARGET" ]]; then
   exit 1
 fi
 
+# Absolute paths before any cd — relative --out-dir would otherwise resolve under WORK_DIR.
+if [[ "$OUT_DIR" != /* && "$OUT_DIR" != [A-Za-z]:* ]]; then
+  OUT_DIR="$ROOT/$OUT_DIR"
+fi
+# Normalize (also works on macOS without GNU readlink -f)
+mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
+mkdir -p "$WORK_DIR"
+WORK_DIR="$(cd "$WORK_DIR" && pwd)"
+
 EXE_SUFFIX=""
 case "$TARGET" in
   x86_64-pc-windows-msvc) EXE_SUFFIX=".exe" ;;
@@ -40,7 +52,6 @@ case "$TARGET" in
   *) echo "error: unsupported target '$TARGET'" >&2; exit 1 ;;
 esac
 
-mkdir -p "$WORK_DIR" "$OUT_DIR"
 cd "$WORK_DIR"
 echo "WORK_DIR=$WORK_DIR OUT_DIR=$OUT_DIR TARGET=$TARGET JOBS=$JOBS"
 
@@ -234,23 +245,34 @@ case "$TARGET" in
     mkdir -p "$PREFIX"
     fetch_x264
     fetch_ffmpeg
-    # pkg-config for cross builds often needs these.
-    export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
-    export PKG_CONFIG="pkg-config"
     build_x264_unix "$PREFIX" \
       --host=x86_64-w64-mingw32 \
       --cross-prefix=x86_64-w64-mingw32-
-    # Rewrite x264.pc prefix if needed (mingw installs can confuse pkg-config).
+    # Force pkg-config to only see our mingw-built x264 (ignore host .pc files).
+    mkdir -p "$PREFIX/lib/pkgconfig"
     if [[ -f "$PREFIX/lib/pkgconfig/x264.pc" ]]; then
       sed -i.bak "s|^prefix=.*|prefix=$PREFIX|" "$PREFIX/lib/pkgconfig/x264.pc"
+      cat "$PREFIX/lib/pkgconfig/x264.pc"
     fi
+    cat > "$WORK_DIR/pkg-config-mingw" <<EOF
+#!/bin/sh
+export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
+export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
+unset PKG_CONFIG_SYSROOT_DIR
+exec pkg-config "\$@"
+EOF
+    chmod +x "$WORK_DIR/pkg-config-mingw"
+    export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
+    export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
     build_ffmpeg_unix "$PREFIX" \
       --target-os=mingw32 \
       --arch=x86_64 \
       --cross-prefix=x86_64-w64-mingw32- \
-      --extra-libs="-static -lpthread" \
-      --enable-cross-compile \
-      --pkg-config=pkg-config
+      --pkg-config="$WORK_DIR/pkg-config-mingw" \
+      --extra-cflags="-I${PREFIX}/include" \
+      --extra-ldflags="-L${PREFIX}/lib" \
+      --extra-libs="-static -lx264 -lpthread" \
+      --enable-cross-compile
     install_sidecars "$PREFIX"
     verify_sidecars
     ;;
@@ -276,10 +298,12 @@ case "$TARGET" in
       build_ffmpeg_unix "$PREFIX" --extra-libs="-lpthread -lm"
     else
       echo "Cross-compiling macOS $want_arch on $host_machine host..."
+      # Cross x264 often cannot find a matching nasm; software asm-less build is fine.
       export CC="clang -arch ${want_arch}"
       export CXX="clang++ -arch ${want_arch}"
       build_x264_unix "$PREFIX" \
         --host="${want_arch}-apple-darwin" \
+        --disable-asm \
         --extra-cflags="-arch ${want_arch}" \
         --extra-ldflags="-arch ${want_arch}"
       build_ffmpeg_unix "$PREFIX" \
