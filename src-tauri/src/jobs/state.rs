@@ -6,7 +6,6 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::models::{CompressionJob, CompressionSettings, JobKind, JobStatus, OutputMode, TrimRange};
 
-// all the job list + cancel flags live here. worker peeks at this.
 pub struct JobManager {
     inner: Mutex<Inner>,
     wake: Notify,
@@ -35,6 +34,7 @@ impl JobManager {
         trim: Option<TrimRange>,
         kind: JobKind,
         output_name: Option<String>,
+        settings: CompressionSettings,
     ) -> CompressionJob {
         let id = uuid::Uuid::new_v4().to_string();
         let job = CompressionJob {
@@ -45,7 +45,7 @@ impl JobManager {
             error: None,
             progress_percent: 0.0,
             output_size_bytes: None,
-            settings: CompressionSettings::discord(),
+            settings,
             output_mode,
             trim,
             kind,
@@ -64,8 +64,6 @@ impl JobManager {
         job
     }
 
-    /// queue only if this input isnt already in the list (any status).
-    /// failed/cancelled use retry — dont invent duplicates from folder re-scan.
     pub async fn enqueue_new(
         &self,
         input_path: String,
@@ -73,6 +71,7 @@ impl JobManager {
         trim: Option<TrimRange>,
         kind: JobKind,
         output_name: Option<String>,
+        settings: CompressionSettings,
     ) -> Option<CompressionJob> {
         {
             let inner = self.inner.lock().await;
@@ -85,7 +84,7 @@ impl JobManager {
             }
         }
         Some(
-            self.enqueue(input_path, output_mode, trim, kind, output_name)
+            self.enqueue(input_path, output_mode, trim, kind, output_name, settings)
                 .await,
         )
     }
@@ -109,7 +108,6 @@ impl JobManager {
                     return true;
                 }
                 JobStatus::Running => {
-                    // worker will notice the flag and kill ffmpeg
                     return true;
                 }
                 _ => return false,
@@ -118,7 +116,6 @@ impl JobManager {
         false
     }
 
-    /// Re-queue the same job id (no duplicate row). Keeps ingest dedupe consistent.
     pub async fn retry(&self, job_id: &str) -> Option<CompressionJob> {
         let mut inner = self.inner.lock().await;
         let cloned = {
@@ -190,7 +187,6 @@ impl JobManager {
     pub async fn set_failed(&self, job_id: &str, error: String) {
         let mut inner = self.inner.lock().await;
         if let Some(job) = inner.jobs.iter_mut().find(|j| j.id == job_id) {
-            // dont overwrite a cancel we already marked
             if job.status == JobStatus::Cancelled {
                 return;
             }
@@ -213,7 +209,6 @@ impl JobManager {
         inner.jobs.retain(|job| {
             matches!(job.status, JobStatus::Queued | JobStatus::Running)
         });
-        // drop cancel flags for removed jobs
         let keep: std::collections::HashSet<_> =
             inner.jobs.iter().map(|j| j.id.clone()).collect();
         inner.cancels.retain(|id, _| keep.contains(id));
@@ -249,7 +244,6 @@ impl JobManager {
         count
     }
 
-    // grabs the next queued job, or waits until something shows up
     pub async fn wait_next_queued(&self) -> CompressionJob {
         loop {
             {

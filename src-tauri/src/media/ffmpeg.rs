@@ -8,6 +8,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 use crate::error::AppError;
+use crate::filesystem::discovery::same_path;
 use crate::filesystem::output::{
     backup_path, beside_original_unique, replace_final_path, temp_path,
 };
@@ -16,7 +17,6 @@ use crate::media::bitrate::{plan_bitrates, scale_video_bitrate, BitratePlan};
 use crate::media::ffprobe;
 use crate::models::{CompressResult, CompressionSettings, JobKind, OutputMode, TrimRange, VideoCodec};
 
-// queue calls this so we can cancel + drip progress back out
 pub async fn run_job<F>(
     path: &Path,
     settings: &CompressionSettings,
@@ -94,7 +94,6 @@ where
 
     let needs_trim = active_trim.is_some();
 
-    // already small enough and they didnt ask to cut anything
     if media.size_bytes <= settings.target_size_bytes && !needs_trim {
         on_progress(encode_duration, encode_duration, 100.0);
         return Ok(CompressResult {
@@ -252,7 +251,6 @@ fn finalize_output(
     }
 }
 
-// never overwrite the original until the temp file is good
 fn finalize_replace(
     original: &Path,
     temp: &Path,
@@ -268,8 +266,10 @@ fn finalize_replace(
         return Err(AppError::OutputAlreadyExists(backup.display().to_string()));
     }
 
-    // same path (already .mp4): move original aside, then slide temp into place
-    if final_path == original {
+    if same_path(
+        &final_path.to_string_lossy(),
+        &original.to_string_lossy(),
+    ) {
         std::fs::rename(original, &backup).map_err(|e| {
             let _ = std::fs::remove_file(temp);
             AppError::Io(format!("couldn't back up original: {e}"))
@@ -285,7 +285,6 @@ fn finalize_replace(
         return Ok(final_path);
     }
 
-    // different ext (eg .mkv -> .mp4): park original, put mp4 down, then drop backup
     if final_path.exists() {
         let _ = std::fs::remove_file(temp);
         return Err(AppError::OutputAlreadyExists(
@@ -308,7 +307,7 @@ fn finalize_replace(
     Ok(final_path)
 }
 
-/// Clear leftover `.squeeze-backup.*` from a crashed replace so the next run can proceed.
+// Recover .squeeze-backup.* left by a crashed replace.
 fn recover_orphaned_backup(
     original: &Path,
     final_path: &Path,
@@ -318,7 +317,6 @@ fn recover_orphaned_backup(
         return Ok(());
     }
 
-    // Successful replace then crash before deleting backup: final exists → drop orphan.
     if final_path.exists() && final_path != backup {
         std::fs::remove_file(backup).map_err(|e| {
             AppError::Io(format!(
@@ -329,11 +327,10 @@ fn recover_orphaned_backup(
         return Ok(());
     }
 
-    // Mid-replace crash: original was moved to backup and final never landed.
     if !original.exists() || original == backup {
         std::fs::rename(backup, original).map_err(|e| {
             AppError::Io(format!(
-                "couldn't restore backup {} → {}: {e}",
+                "couldn't restore backup {} to {}: {e}",
                 backup.display(),
                 original.display()
             ))
@@ -341,7 +338,6 @@ fn recover_orphaned_backup(
         return Ok(());
     }
 
-    // Both original and backup exist (unexpected). Prefer keeping original; drop backup.
     std::fs::remove_file(backup).map_err(|e| {
         AppError::Io(format!(
             "couldn't remove leftover backup {}: {e}",
@@ -367,7 +363,6 @@ where
         let _ = std::fs::remove_file(output);
     }
 
-    // -ss before -i for a fast stream-copy cut (keyframe-aligned).
     let args = [
         "-y".to_string(),
         "-ss".to_string(),
@@ -498,7 +493,6 @@ where
         VideoCodec::H264 => "libx264",
     };
 
-    // -i first, then -ss/-t so the cut is accurate while we re-encode anyway
     let mut args = vec![
         "-y".to_string(),
         "-i".to_string(),
@@ -538,7 +532,6 @@ where
 
     let mut filters: Vec<String> = Vec::new();
     if let (Some(w), Some(h)) = (settings.max_width, settings.max_height) {
-        // force_divisible_by=2 keeps libx264-safe even dimensions after aspect fit
         filters.push(format!(
             "scale='min({w},iw)':'min({h},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
         ));
@@ -580,7 +573,6 @@ where
         .take()
         .ok_or_else(|| AppError::EncodingFailed("missing ffmpeg stderr".to_string()))?;
 
-    // drain stderr so the pipe doesnt fill up and freeze ffmpeg
     let stderr_task = tauri::async_runtime::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         let mut tail = String::new();
@@ -643,7 +635,7 @@ where
     Ok(())
 }
 
-// ffmpeg prints out_time_ms=... (actually microseconds half the time, go figure)
+// ffmpeg out_time_ms is often microseconds despite the name.
 fn parse_out_time_seconds(line: &str) -> Option<f64> {
     if let Some(value) = line.strip_prefix("out_time_ms=") {
         let us: f64 = value.parse().ok()?;
@@ -654,7 +646,6 @@ fn parse_out_time_seconds(line: &str) -> Option<f64> {
         return Some(us / 1_000_000.0);
     }
     if let Some(value) = line.strip_prefix("out_time=") {
-        // HH:MM:SS.micro
         return parse_hms(value);
     }
     None

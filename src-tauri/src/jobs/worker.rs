@@ -8,7 +8,6 @@ use crate::jobs::state::JobManager;
 use crate::media::ffmpeg;
 use crate::models::{JobProgress, JobStatus};
 
-// one encode at a time. more than that melts most laptops.
 pub fn spawn_worker(app: AppHandle, manager: Arc<JobManager>) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -69,7 +68,6 @@ async fn run_one(app: &AppHandle, manager: Arc<JobManager>, job_id: String) {
             let job_id = progress_id.clone();
             tauri::async_runtime::spawn(async move {
                 manager.set_progress(&job_id, percentage).await;
-                // Progress-only event — do not resend the full job list every tick.
                 let _ = app.emit(
                     "job-progress",
                     JobProgress {

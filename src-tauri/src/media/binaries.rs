@@ -2,8 +2,6 @@ use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
 
-/// Host triple used in Tauri `externalBin` sidecar filenames.
-/// Must match the binary names produced by `scripts/ffmpeg/build.sh`.
 fn target_triple() -> Option<&'static str> {
     #[cfg(all(windows, target_arch = "x86_64"))]
     {
@@ -61,16 +59,13 @@ fn first_existing(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathB
 
 fn candidates_in(dir: &Path, tool: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    // Bundled beside the app: Tauri strips the target triple at install time.
     out.push(dir.join(tool_file_name(tool)));
-    // Dev / pre-copy: triple-suffixed name from setup / CI artifacts.
     if let Some(sidecar) = sidecar_file_name(tool) {
         out.push(dir.join(sidecar));
     }
     out
 }
 
-/// Returns a real on-disk path to a bundled ffmpeg/ffprobe sidecar.
 pub fn find(tool: &str) -> Option<PathBuf> {
     if target_triple().is_none() {
         return None;
@@ -88,7 +83,6 @@ pub fn find(tool: &str) -> Option<PathBuf> {
     first_existing(candidates_in(&binaries, tool))
 }
 
-/// Resolve a bundled sidecar. Never falls back to PATH or downloads.
 pub fn resolve(tool: &str) -> Result<PathBuf, AppError> {
     if target_triple().is_none() {
         return Err(AppError::UnsupportedPlatform);
@@ -103,8 +97,6 @@ pub fn resolve(tool: &str) -> Result<PathBuf, AppError> {
     })
 }
 
-/// Confirm both sidecars are present.
-/// Dev: run `npm run setup:ffmpeg`. Release installs must ship them via `externalBin`.
 pub fn ensure() -> Result<(), AppError> {
     resolve("ffmpeg")?;
     resolve("ffprobe")?;

@@ -327,7 +327,7 @@ body {
   outline-offset: 2px;
 }
 
-/* —— Controls —— */
+/* Controls */
 .toolbar {
   display: flex;
   flex-direction: column;
@@ -348,17 +348,54 @@ body {
   gap: 0.5rem;
 }
 
-.options {
+.squeeze-options {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 0.65rem 1.1rem;
-  padding: 0.7rem 0.85rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  margin-top: 0.15rem;
 }
 
-.options label {
+.target-size-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.88rem;
+  font-weight: 550;
+  color: var(--ink-muted);
+  user-select: none;
+}
+
+.target-size-input input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+  box-sizing: border-box;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 650;
+  text-align: center;
+}
+
+.target-size-input input::-webkit-outer-spin-button,
+.target-size-input input::-webkit-inner-spin-button {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.target-size-input input:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+.replace-check {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
@@ -367,13 +404,14 @@ body {
   font-weight: 550;
   color: var(--ink-muted);
   user-select: none;
+  width: fit-content;
 }
 
-.options label:has(input:checked) {
+.replace-check:has(input:checked) {
   color: var(--ink);
 }
 
-.options input[type="checkbox"] {
+.replace-check input[type="checkbox"] {
   appearance: none;
   width: 1rem;
   height: 1rem;
@@ -387,7 +425,7 @@ body {
   transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
 }
 
-.options input[type="checkbox"]::after {
+.replace-check input[type="checkbox"]::after {
   content: "";
   width: 0.35rem;
   height: 0.55rem;
@@ -397,22 +435,22 @@ body {
   opacity: 0;
 }
 
-.options input[type="checkbox"]:checked {
+.replace-check input[type="checkbox"]:checked {
   background: var(--accent);
   border-color: var(--accent);
 }
 
-.options input[type="checkbox"]:checked::after {
+.replace-check input[type="checkbox"]:checked::after {
   border-color: #041018;
   opacity: 1;
 }
 
-.options input[type="checkbox"]:focus-visible {
+.replace-check input[type="checkbox"]:focus-visible {
   outline: 2px solid var(--accent-ring);
   outline-offset: 2px;
 }
 
-/* —— Buttons —— */
+/* Buttons */
 button {
   appearance: none;
   border-radius: var(--radius-sm);
@@ -484,26 +522,7 @@ button.danger-ghost:hover:not(:disabled) {
   color: var(--danger);
 }
 
-.folder-hint {
-  margin: 0 0 0.85rem;
-  padding: 0.85rem 1rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface));
-  color: var(--ink-muted);
-  font-size: 0.9rem;
-}
-
-.folder-hint p {
-  margin: 0;
-}
-
-.folder-hint strong {
-  color: var(--ink);
-  font-weight: 650;
-}
-
-/* —— Empty —— */
+/* Empty */
 .empty {
   display: flex;
   flex-direction: column;
@@ -584,7 +603,7 @@ kbd {
   color: var(--ink);
 }
 
-/* —— Drop overlay —— */
+/* Drop overlay */
 .drop-overlay {
   position: fixed;
   inset: 0;
@@ -606,7 +625,7 @@ kbd {
   border-radius: var(--radius);
 }
 
-/* —— Error —— */
+/* Error */
 .error-banner {
   display: flex;
   align-items: flex-start;
@@ -645,7 +664,7 @@ kbd {
   font-weight: 550;
 }
 
-/* —— Preview —— */
+/* Preview */
 .preview {
   margin: 0 0 1rem;
   padding: 0.75rem;
@@ -771,16 +790,11 @@ kbd {
   width: 100%;
   max-width: none;
   margin: 0;
-  padding: 0.65rem var(--page-pad-x) calc(0.65rem + env(safe-area-inset-bottom, 0px));
-  gap: 0.55rem;
+  padding: 0.5rem var(--page-pad-x) calc(0.5rem + env(safe-area-inset-bottom, 0px));
+  gap: 0.4rem;
   background: linear-gradient(180deg, rgba(7, 10, 16, 0.88), #070a10 40%);
   border-top: 1px solid var(--line);
   backdrop-filter: blur(12px);
-}
-
-.preview.is-expanded .preview-rename {
-  margin: 0;
-  max-width: 22rem;
 }
 
 .preview.is-expanded .trim-actions {
@@ -788,7 +802,11 @@ kbd {
 }
 
 .preview.is-expanded .scrub-times {
-  font-size: 0.78rem;
+  display: none;
+}
+
+.preview.is-expanded .squeeze-options {
+  margin-top: 0;
 }
 
 .trim-controls {
@@ -971,7 +989,7 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 
-/* —— Queue —— */
+/* Queue */
 .queue {
   margin: 0;
   text-align: left;
@@ -1180,7 +1198,7 @@ kbd {
   }
 }
 
-/* —— Window-size adaptation (desktop resize) —— */
+/* Window resize */
 @media (max-width: 560px) {
   :root {
     --titlebar-h: 2.5rem;
@@ -1203,12 +1221,8 @@ kbd {
     flex: 1 1 auto;
   }
 
-  .options {
-    gap: 0.4rem 0.65rem;
-  }
-
-  .options label {
-    font-size: 0.78rem;
+  .toolbar {
+    margin-bottom: 0.65rem;
   }
 
   .preview-expand-btn {
@@ -1293,10 +1307,6 @@ kbd {
   .preview.is-expanded .scrub-times {
     display: none;
   }
-
-  .preview.is-expanded .preview-rename span {
-    display: none;
-  }
 }
 
 @media (max-height: 420px) {
@@ -1328,7 +1338,7 @@ kbd {
 
 @media (pointer: coarse) {
   button,
-  .options label,
+  .replace-check,
   .queue-open,
   .scrub-handle {
     min-height: 2.5rem;

@@ -1,6 +1,7 @@
 # Build Squeeze release installers for all supported platforms.
 # Requires FFmpeg sidecar artifacts (from Build FFmpeg sidecars workflow or
 # an ffmpeg-sidecars-* GitHub release).
+# Releases only run from v* tags (no release-N drafts).
 
 name: Release
 
@@ -23,7 +24,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  require-tag:
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail without version tag
+        run: |
+          echo "Release builds must run from a v* tag (for example v0.2.0)." >&2
+          echo "Push a tag, or workflow_dispatch from that tag ref." >&2
+          exit 1
+
   release:
+    if: github.ref_type == 'tag'
     strategy:
       fail-fast: false
       matrix:
@@ -41,7 +53,6 @@ jobs:
             args: --target aarch64-apple-darwin
             bundler_ext: tar.gz
           - platform: macos-14
-            # Intel Mac apps: cross-compile from Apple Silicon runners (macos-13 retired).
             target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin
             bundler_ext: tar.gz
@@ -113,13 +124,44 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Import Windows code signing certificate
+        if: runner.os == 'Windows' && env.WINDOWS_CERTIFICATE != ''
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          $path = Join-Path $env:RUNNER_TEMP "squeeze-codesign.pfx"
+          [IO.File]::WriteAllBytes($path, $bytes)
+          Import-PfxCertificate `
+            -FilePath $path `
+            -CertStoreLocation Cert:\CurrentUser\My `
+            -Password (ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force) `
+            | Out-Null
+          $cert = Get-ChildItem Cert:\CurrentUser\My |
+            Where-Object { $_.HasPrivateKey -and $_.Thumbprint } |
+            Select-Object -First 1
+          if (-not $cert) { throw "No code signing certificate imported" }
+
+          $confPath = "src-tauri/tauri.conf.json"
+          $json = Get-Content $confPath -Raw | ConvertFrom-Json
+          if (-not $json.bundle.windows) {
+            $json.bundle | Add-Member -NotePropertyName windows -NotePropertyValue ([pscustomobject]@{}) -Force
+          }
+          $json.bundle.windows | Add-Member -NotePropertyName certificateThumbprint -NotePropertyValue $cert.Thumbprint -Force
+          $json.bundle.windows | Add-Member -NotePropertyName digestAlgorithm -NotePropertyValue "sha256" -Force
+          $json.bundle.windows | Add-Member -NotePropertyName timestampUrl -NotePropertyValue "http://timestamp.digicert.com" -Force
+          $json | ConvertTo-Json -Depth 30 | Set-Content -Path $confPath -Encoding utf8
+          Write-Host "Configured Authenticode signing with thumbprint $($cert.Thumbprint)"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('release-{0}', github.run_number) }}
-          releaseName: Squeeze ${{ github.ref_type == 'tag' && github.ref_name || format('#{0}', github.run_number) }}
+          tagName: ${{ github.ref_name }}
+          releaseName: Squeeze ${{ github.ref_name }}
           releaseBody: |
             Cross-platform Squeeze build with Squeeze-minimal FFmpeg sidecars.
           releaseDraft: true
