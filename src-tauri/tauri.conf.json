@@ -34,7 +34,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "app", "dmg", "deb", "appimage"],
+    "targets": ["nsis", "msi", "app", "dmg", "deb", "appimage"],
     "publisher": "avalianiz",
     "copyright": "Copyright © 2026 avalianiz",
     "category": "Video",
@@ -50,6 +50,9 @@
         "installMode": "both",
         "installerIcon": "icons/icon.ico",
         "startMenuFolder": "Squeeze"
+      },
+      "wix": {
+        "language": ["en-US"]
       }
     },
     "icon": [

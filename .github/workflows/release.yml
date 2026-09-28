@@ -163,8 +163,35 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: Squeeze ${{ github.ref_name }}
           releaseBody: |
-            Cross-platform Squeeze build with Squeeze-minimal FFmpeg sidecars.
-          releaseDraft: true
+            Local video compression for Windows, macOS, and Linux.
+
+            ## What's new in 0.2.0
+            - Choose a target file size instead of a fixed ~20 MB aim
+            - Windows installers support current-user **and** Program Files installs
+            - MSI installer added alongside the NSIS setup.exe
+            - Safer folder/batch imports and no overwriting the input file on “copy beside”
+            - Fullscreen preview uses more space for the video
+
+            ## Downloads
+
+            ### Windows (x64)
+            - `Squeeze_0.2.0_x64-setup.exe` — NSIS setup (pick current user or Program Files)
+            - `Squeeze_0.2.0_x64_en-US.msi` — MSI installer (Program Files)
+
+            ### macOS
+            - `Squeeze_0.2.0_aarch64.dmg` — Apple Silicon
+            - `Squeeze_0.2.0_x64.dmg` — Intel
+            - `Squeeze_aarch64.app.tar.gz` / `Squeeze_x64.app.tar.gz` — raw `.app` bundles
+
+            ### Linux (x64)
+            - `Squeeze_0.2.0_amd64.AppImage` — AppImage
+            - `Squeeze_0.2.0_amd64.deb` — Debian/Ubuntu package
+
+            ## Notes
+            - App releases use `v*` tags (this release).
+            - FFmpeg sidecar builds stay on separate `ffmpeg-sidecars-*` infrastructure releases and are not end-user downloads.
+            - Unsigned Windows downloads may still show SmartScreen / “Unknown publisher” until an Authenticode certificate is configured.
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
           includeUpdaterJson: false
