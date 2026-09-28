@@ -7,7 +7,6 @@ use crate::error::AppError;
 use crate::media::binaries;
 use crate::models::Media;
 
-// ask ffprobe for streams/format json then map it into Media
 pub async fn probe(path: &Path) -> Result<Media, AppError> {
     if !path.exists() {
         return Err(AppError::InputNotFound(path.display().to_string()));

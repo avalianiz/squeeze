@@ -4,7 +4,6 @@ use serde::Serialize;
 pub enum AppError {
     FfprobeNotFound,
     FfmpegNotFound,
-    /// Returned when the host OS/arch has no bundled sidecar target.
     #[allow(dead_code)]
     UnsupportedPlatform,
     FfprobeFailed(String),
@@ -20,8 +19,6 @@ pub enum AppError {
 }
 
 fn missing_engine_message() -> &'static str {
-    // Users never run npm — shipped builds should always include sidecars.
-    // Dev builds get the setup hint when someone forgot `npm run setup:ffmpeg`.
     if cfg!(debug_assertions) {
         "Squeeze's video engine is missing. For local builds, run: npm run setup:ffmpeg"
     } else {

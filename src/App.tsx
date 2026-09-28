@@ -57,8 +57,13 @@ type JobProgress = {
 type DropIngestResult = {
   jobs_added: number;
   preview_path: string | null;
-  folder_roots: string[];
 };
+
+const DEFAULT_TARGET_SIZE_MB = 20;
+
+function mbToBytes(mb: number) {
+  return Math.round(mb * 1024 * 1024);
+}
 
 function formatSize(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
@@ -159,8 +164,8 @@ function App() {
   const [jobs, setJobs] = useState<CompressionJob[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [recursive, setRecursive] = useState(false);
   const [replaceOriginals, setReplaceOriginals] = useState(false);
+  const [targetSizeMb, setTargetSizeMb] = useState(DEFAULT_TARGET_SIZE_MB);
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
@@ -170,20 +175,17 @@ function App() {
   const [scrubDrag, setScrubDrag] = useState<DragKind>(null);
   const [outputName, setOutputName] = useState("");
   const [maximized, setMaximized] = useState(false);
-  const [folderRoots, setFolderRoots] = useState<string[]>([]);
   const [previewExpanded, setPreviewExpanded] = useState(false);
   const scrubRef = useRef<HTMLDivElement | null>(null);
 
   const replaceRef = useRef(replaceOriginals);
-  const recursiveRef = useRef(recursive);
+  const targetSizeRef = useRef(targetSizeMb);
   const busyRef = useRef(busy);
   const mediaRef = useRef(media);
-  const folderRootsRef = useRef(folderRoots);
   replaceRef.current = replaceOriginals;
-  recursiveRef.current = recursive;
+  targetSizeRef.current = targetSizeMb;
   busyRef.current = busy;
   mediaRef.current = media;
-  folderRootsRef.current = folderRoots;
 
   useEffect(() => {
     const win = getCurrentWindow();
@@ -270,11 +272,8 @@ function App() {
           }
           unlisten = fn;
         })
-        .catch(() => {
-          // Browser preview / non-Tauri shell — drag-drop stays unavailable.
-        });
+        .catch(() => {});
     } catch {
-      // getCurrentWebview throws outside the Tauri runtime.
     }
 
     return () => {
@@ -308,24 +307,9 @@ function App() {
     try {
       const result = await invoke<DropIngestResult>("ingest_paths", {
         paths,
-        recursive: recursiveRef.current,
         replace: replaceRef.current,
+        targetSizeBytes: mbToBytes(targetSizeRef.current),
       });
-
-      if (result.folder_roots.length > 0) {
-        setFolderRoots((prev) => {
-          const next = new Set(prev);
-          for (const root of result.folder_roots) {
-            next.add(root);
-          }
-          return [...next];
-        });
-        // folder batch: queue only — never open the trim player
-        if (result.jobs_added > 0) {
-          setJobs(await invoke<CompressionJob[]>("list_jobs"));
-        }
-        return;
-      }
 
       if (result.preview_path) {
         await previewPath(result.preview_path);
@@ -335,37 +319,6 @@ function App() {
       }
     } catch (err) {
       setError(typeof err === "string" ? err : "drop failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onRecursiveChange(next: boolean) {
-    setRecursive(next);
-    recursiveRef.current = next;
-    if (!next || folderRootsRef.current.length === 0 || busyRef.current) {
-      return;
-    }
-
-    setBusy(true);
-    setError("");
-    try {
-      const result = await invoke<DropIngestResult>("ingest_paths", {
-        paths: folderRootsRef.current,
-        recursive: true,
-        replace: replaceRef.current,
-      });
-      if (result.jobs_added > 0) {
-        setJobs(await invoke<CompressionJob[]>("list_jobs"));
-      } else {
-        const list = await invoke<CompressionJob[]>("list_jobs");
-        setJobs(list);
-        if (list.length === 0) {
-          setError("no videos found in those subfolders either");
-        }
-      }
-    } catch (err) {
-      setError(typeof err === "string" ? err : "couldnt add subfolder videos");
     } finally {
       setBusy(false);
     }
@@ -426,7 +379,7 @@ function App() {
       setError(
         typeof err === "string"
           ? err
-          : "couldnt open the file picker — try dropping a video instead",
+          : "couldnt open the file picker. try dropping a video instead",
       );
       return;
     }
@@ -451,7 +404,7 @@ function App() {
       setError(
         typeof err === "string"
           ? err
-          : "couldnt open the folder picker — try dropping a folder instead",
+          : "couldnt open the folder picker. try dropping a folder instead",
       );
       return;
     }
@@ -488,6 +441,7 @@ function App() {
         trim: trimmed,
         kind,
         outputName: name.length > 0 ? name : null,
+        targetSizeBytes: mbToBytes(targetSizeMb),
       });
       setJobs(await invoke<CompressionJob[]>("list_jobs"));
     } catch (err) {
@@ -663,9 +617,7 @@ function App() {
   const hasActive = jobs.some(
     (j) => j.status === "queued" || j.status === "running",
   );
-  const isHome = !media && jobs.length === 0 && folderRoots.length === 0;
-  const folderPending =
-    folderRoots.length > 0 && !media && jobs.length === 0;
+  const isHome = !media && jobs.length === 0;
 
   async function windowAction(action: "minimize" | "toggleMaximize" | "close") {
     const win = getCurrentWindow();
@@ -679,7 +631,6 @@ function App() {
         await win.close();
       }
     } catch {
-      // ignore — outside Tauri shell
     }
   }
 
@@ -848,24 +799,41 @@ function App() {
                 </button>
               </div>
 
-              <div className="options">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={recursive}
-                    onChange={(e) => void onRecursiveChange(e.target.checked)}
-                  />
-                  Include subfolders
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={replaceOriginals}
-                    onChange={(e) => setReplaceOriginals(e.target.checked)}
-                  />
-                  Replace originals
-                </label>
-              </div>
+              {!media && (
+                <div className="squeeze-options">
+                  <label className="target-size-input">
+                    <span>Target</span>
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={2048}
+                      step={1}
+                      value={targetSizeMb}
+                      onChange={(e) => {
+                        const next = Number(e.target.value);
+                        if (!Number.isFinite(next)) {
+                          return;
+                        }
+                        setTargetSizeMb(
+                          Math.min(2048, Math.max(1, Math.round(next))),
+                        );
+                      }}
+                      disabled={busy}
+                      aria-label="Target size in megabytes"
+                    />
+                    <span>MB</span>
+                  </label>
+                  <label className="replace-check">
+                    <input
+                      type="checkbox"
+                      checked={replaceOriginals}
+                      onChange={(e) => setReplaceOriginals(e.target.checked)}
+                    />
+                    Replace originals
+                  </label>
+                </div>
+              )}
             </section>
 
             {error && (
@@ -879,15 +847,6 @@ function App() {
                 >
                   Dismiss
                 </button>
-              </div>
-            )}
-
-            {folderPending && (
-              <div className="folder-hint" role="status">
-                <p>
-                  No videos in that folder yet. Turn on{" "}
-                  <strong>Include subfolders</strong> to look deeper.
-                </p>
               </div>
             )}
           </>
@@ -953,19 +912,6 @@ function App() {
           </div>
 
           <div className="trim-controls">
-            {previewExpanded && (
-              <label className="rename-field preview-rename">
-                <span>Output name</span>
-                <input
-                  type="text"
-                  value={outputName}
-                  onChange={(e) => setOutputName(e.target.value)}
-                  spellCheck={false}
-                  autoComplete="off"
-                />
-              </label>
-            )}
-
             <div className="transport">
               <button
                 type="button"
@@ -1061,6 +1007,42 @@ function App() {
                 {hasTrim ? " · trim on" : ""}
               </p>
             )}
+
+            <div className="squeeze-options">
+              {!previewExpanded && (
+                <label className="target-size-input">
+                  <span>Target</span>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={1}
+                    max={2048}
+                    step={1}
+                    value={targetSizeMb}
+                    onChange={(e) => {
+                      const next = Number(e.target.value);
+                      if (!Number.isFinite(next)) {
+                        return;
+                      }
+                      setTargetSizeMb(
+                        Math.min(2048, Math.max(1, Math.round(next))),
+                      );
+                    }}
+                    disabled={busy}
+                    aria-label="Target size in megabytes"
+                  />
+                  <span>MB</span>
+                </label>
+              )}
+              <label className="replace-check">
+                <input
+                  type="checkbox"
+                  checked={replaceOriginals}
+                  onChange={(e) => setReplaceOriginals(e.target.checked)}
+                />
+                Replace originals
+              </label>
+            </div>
 
             <div className="row trim-actions">
               <button
@@ -1194,7 +1176,7 @@ function App() {
                       <span>{formatSize(job.output_size_bytes)}</span>
                     )}
                     {job.skipped && job.status === "succeeded" ? (
-                      <span>Already small enough — kept original</span>
+                      <span>Already small enough, kept original</span>
                     ) : (
                       job.output_path && (
                         <span>{fileName(job.output_path)}</span>

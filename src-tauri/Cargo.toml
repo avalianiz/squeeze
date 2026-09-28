@@ -1,7 +1,7 @@
 [package]
 name = "squeeze"
-version = "0.1.0"
-description = "Compress videos for Discord"
+version = "0.2.0"
+description = "Compress videos locally"
 authors = ["avalianiz"]
 edition = "2021"
 

@@ -13,7 +13,6 @@ impl TrimRange {
         (self.end_seconds - self.start_seconds).max(0.0)
     }
 
-    // make sure the sliders arent nonsense relative to the real clip length
     pub fn validate(&self, media_duration: f64) -> Result<(), AppError> {
         if !self.start_seconds.is_finite() || !self.end_seconds.is_finite() {
             return Err(AppError::InvalidTrimRange);
@@ -24,7 +23,6 @@ impl TrimRange {
         if self.end_seconds - self.start_seconds < 0.1 {
             return Err(AppError::InvalidTrimRange);
         }
-        // tiny float slack so end==duration still passes
         if self.end_seconds > media_duration + 0.25 {
             return Err(AppError::InvalidTrimRange);
         }
