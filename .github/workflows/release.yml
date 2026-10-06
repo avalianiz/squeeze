@@ -155,10 +155,26 @@ jobs:
           $json | ConvertTo-Json -Depth 30 | Set-Content -Path $confPath -Encoding utf8
           Write-Host "Configured Authenticode signing with thumbprint $($cert.Thumbprint)"
 
+      - name: Require update signing key
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [[ -z "${TAURI_SIGNING_PRIVATE_KEY}" || -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD}" ]]; then
+            echo "Signed updates need both GitHub secrets:" >&2
+            echo "  TAURI_SIGNING_PRIVATE_KEY — contents of the gitignored .keys/squeeze.key file" >&2
+            echo "  TAURI_SIGNING_PRIVATE_KEY_PASSWORD — contents of .keys/password.txt" >&2
+            echo "See README.md. Do not commit the private key." >&2
+            exit 1
+          fi
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Squeeze ${{ github.ref_name }}
@@ -191,7 +207,8 @@ jobs:
             - App releases use `v*` tags (this release).
             - FFmpeg sidecar builds stay on separate `ffmpeg-sidecars-*` infrastructure releases and are not end-user downloads.
             - Unsigned Windows downloads may still show SmartScreen / “Unknown publisher” until an Authenticode certificate is configured.
+            - Installed copies of Squeeze check `latest.json` on this release and can download a signed update.
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
-          includeUpdaterJson: false
+          includeUpdaterJson: true
