@@ -20,6 +20,14 @@ npm run tauri dev
 
 `npm run setup:ffmpeg` downloads the prebuilt FFmpeg sidecars. A local production build is `npm run tauri build`.
 
+Before you push a `v*` release tag, run:
+
+```bash
+npm run preflight
+```
+
+That typechecks the frontend and checks `NOTICES.txt`. The Release workflow runs the same checks on one cheap runner before it starts the four installer builds.
+
 Do not commit `src-tauri/binaries/`, installer artifacts, `.env` files, or anything under `.keys/`. The updater private key stays in GitHub secrets.
 
 ## Dependencies and notices

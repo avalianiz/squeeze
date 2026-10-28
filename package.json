@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "typecheck": "tsc --noEmit",
+    "preflight": "npm run typecheck && npm run notices -- --check",
     "preview": "vite preview",
     "tauri": "tauri",
     "setup:ffmpeg": "node scripts/setup-ffmpeg.js",

@@ -29,6 +29,7 @@ jobs:
   require-tag:
     if: github.ref_type != 'tag'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Fail without version tag
         run: |
@@ -36,7 +37,32 @@ jobs:
           echo "Push a tag, or workflow_dispatch from that tag ref." >&2
           exit 1
 
+  # Cheap gate so a broken frontend does not spend four paid runners.
+  check:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Notices up to date
+        run: npm run notices -- --check
+
   release:
+    needs: check
     if: github.ref_type == 'tag'
     strategy:
       fail-fast: false

@@ -239,36 +239,6 @@ function formatTimecode(seconds: number) {
   return formatDuration(seconds);
 }
 
-function parseTimecode(text: string, maxSeconds: number): number | null {
-  const raw = text.trim();
-  if (!raw) {
-    return null;
-  }
-  const match = raw.match(
-    /^(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:\.(\d{1,3}))?$|^(\d+(?:\.\d+)?)$/,
-  );
-  if (!match) {
-    return null;
-  }
-  let seconds = 0;
-  if (match[5] != null) {
-    seconds = Number(match[5]);
-  } else {
-    const h = match[1] != null ? Number(match[1]) : 0;
-    const m = Number(match[2]);
-    const s = Number(match[3]);
-    const frac = match[4] != null ? Number(`0.${match[4]}`) : 0;
-    if (![h, m, s, frac].every((n) => Number.isFinite(n)) || m >= 60 || s >= 60) {
-      return null;
-    }
-    seconds = h * 3600 + m * 60 + s + frac;
-  }
-  if (!Number.isFinite(seconds) || seconds < 0) {
-    return null;
-  }
-  return clamp(seconds, 0, maxSeconds);
-}
-
 function formatBitrate(bps: number | null | undefined) {
   if (bps == null || !Number.isFinite(bps) || bps <= 0) {
     return null;
@@ -602,9 +572,6 @@ function App() {
   const [targetCustom, setTargetCustom] = useState(
     () => !isTargetPreset(prefs.targetSizeMb),
   );
-  const [startDraft, setStartDraft] = useState("0:00.00");
-  const [endDraft, setEndDraft] = useState("0:00.00");
-  const [durationDraft, setDurationDraft] = useState("0:00.00");
   const [chromeVisible, setChromeVisible] = useState(true);
   const [playbackVolume, setPlaybackVolume] = useState(1);
   const [playbackMuted, setPlaybackMuted] = useState(false);
@@ -839,15 +806,6 @@ function App() {
       setPreviewExpanded(true);
     }
   }, []);
-
-  useEffect(() => {
-    if (scrubDrag) {
-      return;
-    }
-    setStartDraft(formatTimecode(trimStart));
-    setEndDraft(formatTimecode(trimEnd));
-    setDurationDraft(formatTimecode(Math.max(0, trimEnd - trimStart)));
-  }, [trimStart, trimEnd, scrubDrag]);
 
   useEffect(() => {
     if (!previewExpanded) {
@@ -1557,43 +1515,6 @@ function App() {
     setReplaceOriginals(next);
   }
 
-  function commitStartDraft() {
-    if (!media) {
-      return;
-    }
-    const parsed = parseTimecode(startDraft, media.duration_seconds);
-    if (parsed == null) {
-      setStartDraft(formatTimecode(trimStart));
-      return;
-    }
-    onStartChange(parsed);
-  }
-
-  function commitEndDraft() {
-    if (!media) {
-      return;
-    }
-    const parsed = parseTimecode(endDraft, media.duration_seconds);
-    if (parsed == null) {
-      setEndDraft(formatTimecode(trimEnd));
-      return;
-    }
-    onEndChange(parsed);
-  }
-
-  function commitDurationDraft() {
-    if (!media) {
-      return;
-    }
-    const parsed = parseTimecode(durationDraft, media.duration_seconds);
-    if (parsed == null) {
-      setDurationDraft(formatTimecode(Math.max(0, trimEnd - trimStart)));
-      return;
-    }
-    const nextEnd = Math.min(media.duration_seconds, trimStart + Math.max(0.1, parsed));
-    onEndChange(nextEnd);
-  }
-
   async function cancel(jobId: string) {
     try {
       await invoke("cancel_job", { jobId });
@@ -2008,6 +1929,7 @@ function App() {
   const keepSeconds = media ? Math.max(0, trimEnd - trimStart) : 0;
   const outputExt = media ? outputExtFor(media.path) : "";
   const estimateBytes = planPreview?.target_size_bytes ?? mbToBytes(targetSizeMb);
+  const estimateBitrate = formatBitrate(planPreview?.video_bitrate_bps);
   const savingPct =
     media && media.size_bytes > 0
       ? Math.round((1 - estimateBytes / media.size_bytes) * 100)
@@ -2317,7 +2239,9 @@ function App() {
                     {formatTimecode(currentTime)}
                   </span>
                   <div
-                    className={`scrub${scrubDrag ? " scrub-active" : ""}`}
+                    className={`scrub${scrubDrag ? " scrub-active" : ""}${
+                      filmstripFrames.length > 0 ? " has-filmstrip" : ""
+                    }${filmstripLoading ? " is-loading" : ""}`}
                     ref={scrubRef}
                     onPointerDown={(e) => {
                       if (
@@ -2339,6 +2263,29 @@ function App() {
                     aria-valuetext={formatTimecode(currentTime)}
                     tabIndex={0}
                   >
+                    {(filmstripLoading || filmstripFrames.length > 0) && (
+                      <div
+                        className={`filmstrip${
+                          filmstripLoading && filmstripFrames.length === 0
+                            ? " filmstrip-placeholder is-loading"
+                            : ""
+                        }`}
+                        aria-hidden="true"
+                      >
+                        {filmstripFrames.length > 0
+                          ? filmstripFrames.map((src, index) => (
+                              <img
+                                key={`${index}-${src.slice(0, 24)}`}
+                                src={src}
+                                alt=""
+                                draggable={false}
+                              />
+                            ))
+                          : Array.from({ length: 12 }, (_, index) => (
+                              <span key={index} className="filmstrip-bone" />
+                            ))}
+                      </div>
+                    )}
                     <div className="scrub-track" aria-hidden="true" />
                     <div
                       className="scrub-dim left"
@@ -2866,6 +2813,7 @@ function App() {
                       {resolutionShortLabel(media.height, media.width)} →{" "}
                       {targetResolutionLabel(fitPreset, media)} ·{" "}
                       {formatDuration(keepSeconds)}
+                      {estimateBitrate ? ` · ~${estimateBitrate}` : ""}
                     </p>
                   </div>
                   <div className="export-primary-row">
