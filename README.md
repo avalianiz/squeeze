@@ -1,61 +1,53 @@
 <div align="center">
 
-<img src="public/files/favicon.svg" alt="Squeeze logo" width="80" />
+<img src="public/files/favicon.svg" alt="Squeeze logo" width="45" />
 
 # Squeeze
 
-Fit a clip under social media upload limits, or just free up disk space. Nothing is uploaded anywhere.
+**Compress and trim videos locally. Fit a clip under upload limits, or free up disk space. Nothing is uploaded anywhere.**
 
 <br />
 
-[![Release](https://img.shields.io/github/v/release/avalianiz/squeeze?style=flat-square&color=22c3f5)](https://github.com/avalianiz/squeeze/releases)
-[![Downloads](https://img.shields.io/github/downloads/avalianiz/squeeze/total?style=flat-square&color=22c3f5)](https://github.com/avalianiz/squeeze/releases)
-[![Stars](https://img.shields.io/github/stars/avalianiz/squeeze?style=flat-square&color=22c3f5)](https://github.com/avalianiz/squeeze/stargazers)
-[![License](https://img.shields.io/github/license/avalianiz/squeeze?style=flat-square&color=22c3f5)](LICENSE)
-![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri-24C8DB?style=flat-square&logo=tauri&logoColor=white)
-![Rust](https://shieldcn.dev/badge/Rust.svg?variant=branded&brand=rust)
+<a href="https://getsqueeze.app"><img src="https://shieldcn.dev/badge/getsqueeze.app-22c3f5.svg?variant=ghost&logo=ri%3AGoGlobal" alt="Website" /></a>
+<a href="https://github.com/avalianiz/squeeze/releases/latest"><img src="https://shieldcn.dev/badge/download-latest-22c3f5.svg?variant=ghost&logo=ri%3AGoDownload" alt="Download" /></a>
+<a href="https://github.com/avalianiz/squeeze/issues"><img src="https://shieldcn.dev/badge/feedback-issues-22c3f5.svg?variant=ghost&logo=ri%3AGoCommentDiscussion" alt="Feedback" /></a>
 
-[**Website**](https://getsqueeze.app) · [**Download**](https://github.com/avalianiz/squeeze/releases/latest) · [**Report a bug**](https://github.com/avalianiz/squeeze/issues) · [**Request a feature**](https://github.com/avalianiz/squeeze/issues)
+___
+
 
 <br />
 
-[Watch the demo](docs/demo.mp4)
+<img src="public/assets/demo.gif" alt="Demo gif for Squeeze" width="820" />
 
 </div>
 
 <br />
+
+
 
 ## Why Squeeze?
 
-Most "compress video" sites make you upload your files, cap the size, and slap on a watermark. Command-line ffmpeg works great, but you end up doing bitrate math by hand every time.
+Most "compress video" websites make you upload your files, ask for money, or slap a watermark on your video. Command line ffmpeg works great, but it is not the most user-friendly thing ever, especially for non-technical people.
 
-Squeeze is a small desktop app that wraps ffmpeg. You pick a **target size** and it figures out the rest.
-
-<div align="center">
-
-| | |
-|---|---|
-| **178.34 MB → 10.00 MB** | A 4K clip, trimmed and compressed to a 10 MB target (−94%) |
-
-</div>
+Squeeze is a small desktop app that wraps ffmpeg. You pick a **target size** and it figures out the rest. 
 
 ## Features
 
 - **Target-size compression**: pick 10 MB, 25 MB, 50 MB, or enter a custom size
-- **Built-in trimmer**: drag the handles on the timeline to cut a clip before encoding
+- **Built-in trimmer**: trim the video before squeezing it
 - **Live size estimate**: see the output size and savings before you hit Compress
 - **Resolution and framerate controls**: Original / 1080p / 720p, Full / 60 / 30 fps
 - **Batch queue**: add multiple videos and process them in one go
 - **Mute audio**: strip the audio track in one click
 - **Replace originals**: optionally overwrite the source after a successful encode
 - **100% local**: your videos never leave your machine
-- **Lightweight**: native app built with Rust and Tauri, no bundled browser
+- **Lightweight**: native app built with Rust and Tauri, no bundled browser, embedded ffmpeg binary is stripped down
 
 ## Installation
 
 ### Download
-![Cross Platform](https://shieldcn.dev/badge/cross-platform-brightgreen.svg?variant=outline&logo=ri%3AGoDeviceDesktop)
-Grab the latest installer from the [**Releases**](https://github.com/avalianiz/squeeze/releases/latest) page, or visit [getsqueeze.app](https://getsqueeze.app).
+Visit [getsqueeze.app](https://getsqueeze.app), or
+get  the latest installer from the [**Releases**](https://github.com/avalianiz/squeeze/releases/latest) page.
 
 | Platform | File |
 |---|---|
@@ -64,9 +56,9 @@ Grab the latest installer from the [**Releases**](https://github.com/avalianiz/s
 | macOS Intel | `Squeeze_*_x64.dmg` |
 | Linux x64 | `Squeeze_*_amd64.AppImage` or `Squeeze_*_amd64.deb` |
 
-`Squeeze_*.app.tar.gz` on the release is the macOS update payload. Install from the `.dmg`.
 
-Windows may show a SmartScreen “Unknown publisher” warning, and macOS may say the app is from an unidentified developer, until the installers are signed and notarized.
+> [!WARNING]
+> Windows may show a SmartScreen "Unknown publisher" warning, and macOS may say the app is from an unidentified developer, until the installers are signed and notarized.
 
 ### Build from source
 
@@ -99,19 +91,14 @@ npm run tauri build
 
 Squeeze runs [ffmpeg](https://ffmpeg.org) under the hood. It reads your clip's duration, works out the video bitrate needed to land on your target size, and encodes with those settings. The UI is built with TypeScript and Vite, and the native shell is Rust with [Tauri](https://tauri.app).
 
-## Tech stack
+## Contributing
 
 <div align="center">
 
-![Rust](https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white)
-![Tauri](https://img.shields.io/badge/Tauri-24C8DB?style=for-the-badge&logo=tauri&logoColor=white)
-![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
-![Vite](https://img.shields.io/badge/Vite-646CFF?style=for-the-badge&logo=vite&logoColor=white)
-![FFmpeg](https://img.shields.io/badge/FFmpeg-007808?style=for-the-badge&logo=ffmpeg&logoColor=white)
+![Contributions Welcome](https://shieldcn.dev/badge/contributions-welcome-brightgreen.svg?variant=branded&logo=ri%3AGoHeartFill)
+![PRs Welcome](https://shieldcn.dev/badge/PRs-welcome-brightgreen.svg?variant=secondary)
 
 </div>
-
-## Contributing
 
 Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request. For larger changes, please open an issue first.
 
