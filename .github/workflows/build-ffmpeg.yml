@@ -6,19 +6,21 @@
 #
 # Publish a release with tag ffmpeg-sidecars-* so `npm run setup:ffmpeg` can
 # download them. Re-run when scripts/ffmpeg/versions.env or configure-flags change.
+#
+# Manual only. One run compiles FFmpeg on four runners, and the macOS runners
+# bill minutes at 10x. Do not add a push or pull_request trigger.
 
 name: Build FFmpeg sidecars
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - "scripts/ffmpeg/**"
-      - ".github/workflows/build-ffmpeg.yml"
-    branches: [main, master]
 
 permissions:
   contents: write
+
+concurrency:
+  group: ffmpeg-sidecars
+  cancel-in-progress: true
 
 env:
   SQUEEZE_FFMPEG_WORK_DIR: ${{ github.workspace }}/.ffmpeg-build
@@ -45,6 +47,7 @@ jobs:
             package: tar.gz
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     name: ffmpeg (${{ matrix.target }})
 
     steps:
@@ -153,10 +156,8 @@ jobs:
 
   publish:
     needs: ffmpeg
-    # Only mint a downloadable ffmpeg-sidecars-* release on manual runs.
-    # Push builds still upload workflow artifacts for inspection.
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - name: Download all packages
         uses: actions/download-artifact@v4

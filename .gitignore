@@ -15,7 +15,6 @@ dist-ssr
 # Editor / OS
 .vscode/
 .idea/
-.cursor/
 .DS_Store
 *.suo
 *.ntvs*
@@ -29,14 +28,6 @@ dist-ssr
 
 # Updater signing secrets. The public key lives in tauri.conf.json.
 .keys/
-
-# Local recordings, demo frames, screenshots, agent files
-demo/
-tmp-screenshots/
-.agents/
-skills-lock.json
-public/files/*.mp4
-public/files/*.gif
 
 # Rust / Tauri
 src-tauri/target
@@ -63,4 +54,3 @@ src-tauri/binaries/*
 
 # Local downloaded installers
 installers/
-

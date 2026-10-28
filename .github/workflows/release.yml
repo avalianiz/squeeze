@@ -2,6 +2,8 @@
 # Requires FFmpeg sidecar artifacts (from Build FFmpeg sidecars workflow or
 # an ffmpeg-sidecars-* GitHub release).
 # Releases only run from v* tags (no release-N drafts).
+# A tag spends one Windows runner, one Linux runner, and two macOS runners.
+# There is no pull_request trigger. Do not add one.
 
 name: Release
 
@@ -30,7 +32,7 @@ jobs:
     steps:
       - name: Fail without version tag
         run: |
-          echo "Release builds must run from a v* tag (for example v0.2.0)." >&2
+          echo "Release builds must run from a v* tag (for example vX.Y.Z)." >&2
           echo "Push a tag, or workflow_dispatch from that tag ref." >&2
           exit 1
 
@@ -58,6 +60,7 @@ jobs:
             bundler_ext: tar.gz
 
     runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
     name: squeeze (${{ matrix.target }})
 
     steps:
@@ -165,9 +168,47 @@ jobs:
             echo "Signed updates need both GitHub secrets:" >&2
             echo "  TAURI_SIGNING_PRIVATE_KEY — contents of the gitignored .keys/squeeze.key file" >&2
             echo "  TAURI_SIGNING_PRIVATE_KEY_PASSWORD — contents of .keys/password.txt" >&2
-            echo "See README.md. Do not commit the private key." >&2
+            echo "See CONTRIBUTING.md. Do not commit the private key." >&2
             exit 1
           fi
+
+      - name: Compose release notes
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          {
+            echo "Local video compression for Windows, macOS, and Linux. Nothing is uploaded."
+            echo ""
+            if [[ -f RELEASE_NOTES.md ]]; then
+              cat RELEASE_NOTES.md
+              echo ""
+            fi
+            echo "## Install"
+            echo ""
+            echo "- Windows x64: \`Squeeze_${VERSION}_x64-setup.exe\` (current user or Program Files) or \`Squeeze_${VERSION}_x64_en-US.msi\`"
+            echo "- macOS Apple Silicon: \`Squeeze_${VERSION}_aarch64.dmg\`"
+            echo "- macOS Intel: \`Squeeze_${VERSION}_x64.dmg\`"
+            echo "- Linux x64: \`Squeeze_${VERSION}_amd64.AppImage\` or \`Squeeze_${VERSION}_amd64.deb\`"
+            echo ""
+            echo "\`Squeeze_*.app.tar.gz\` files are update payloads. Install macOS from the \`.dmg\`."
+            echo ""
+            echo "## Notes"
+            echo ""
+            echo "- Tag: \`${TAG}\`"
+            echo "- Windows may show SmartScreen “Unknown publisher” until an Authenticode certificate is configured."
+            echo "- macOS may say the app is from an unidentified developer until it is notarized."
+            echo "- FFmpeg sidecars stay on \`ffmpeg-sidecars-*\` releases and are not end-user downloads."
+            echo "- App code is MIT. Bundled FFmpeg and x264 are GPL-2.0-or-later. See NOTICES.txt."
+            echo "- Installed copies check \`latest.json\` on this release and can download a signed update."
+          } > "$RUNNER_TEMP/release-body.md"
+          {
+            echo "body<<EOF"
+            cat "$RUNNER_TEMP/release-body.md"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -178,36 +219,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Squeeze ${{ github.ref_name }}
-          releaseBody: |
-            Local video compression for Windows, macOS, and Linux.
-
-            ## What's new in 0.2.0
-            - Choose a target file size instead of a fixed ~20 MB aim
-            - Windows installers support current-user **and** Program Files installs
-            - MSI installer added alongside the NSIS setup.exe
-            - Safer folder/batch imports and no overwriting the input file on “copy beside”
-            - Fullscreen preview uses more space for the video
-
-            ## Downloads
-
-            ### Windows (x64)
-            - `Squeeze_0.2.0_x64-setup.exe` — NSIS setup (pick current user or Program Files)
-            - `Squeeze_0.2.0_x64_en-US.msi` — MSI installer (Program Files)
-
-            ### macOS
-            - `Squeeze_0.2.0_aarch64.dmg` — Apple Silicon
-            - `Squeeze_0.2.0_x64.dmg` — Intel
-            - `Squeeze_aarch64.app.tar.gz` / `Squeeze_x64.app.tar.gz` — raw `.app` bundles
-
-            ### Linux (x64)
-            - `Squeeze_0.2.0_amd64.AppImage` — AppImage
-            - `Squeeze_0.2.0_amd64.deb` — Debian/Ubuntu package
-
-            ## Notes
-            - App releases use `v*` tags (this release).
-            - FFmpeg sidecar builds stay on separate `ffmpeg-sidecars-*` infrastructure releases and are not end-user downloads.
-            - Unsigned Windows downloads may still show SmartScreen / “Unknown publisher” until an Authenticode certificate is configured.
-            - Installed copies of Squeeze check `latest.json` on this release and can download a signed update.
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

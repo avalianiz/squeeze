@@ -731,8 +731,7 @@ function App() {
       setMaximized(true);
       setWorkbench(true);
     }
-    const mockPath =
-      "C:\\Videos\\example-clip.mp4";
+    const mockPath = "C:\\Videos\\example-clip.mp4";
     const probed: Media = {
       path: mockPath,
       duration_seconds: 60,

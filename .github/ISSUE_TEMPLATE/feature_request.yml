@@ -1,0 +1,19 @@
+name: Feature request
+description: A change to what Squeeze does
+title: ""
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you cannot do with Squeeze today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What you want it to do, and how you would tell that it worked.
+    validations:
+      required: true

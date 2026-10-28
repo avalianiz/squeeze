@@ -1,0 +1,45 @@
+name: Bug report
+description: Something in Squeeze failed or produced a bad result
+title: ""
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what Squeeze did instead.
+    validations:
+      required: true
+  - type: textarea
+    id: clip
+    attributes:
+      label: Input clip
+      description: Container, approximate length, resolution, and frame rate. Do not attach the video unless a maintainer asks.
+      placeholder: mp4, about 2 minutes, 3840x2160, 60 fps
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Squeeze version
+      placeholder: from the About dialog or the installer name
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS Apple Silicon
+        - macOS Intel
+        - Linux
+    validations:
+      required: true
+  - type: textarea
+    id: settings
+    attributes:
+      label: Settings
+      description: Target size, resolution, frame rate, trim, mute, and whether replace-originals was on.
+    validations:
+      required: false
